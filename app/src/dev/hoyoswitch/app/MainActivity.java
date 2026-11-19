@@ -2,12 +2,14 @@ package dev.hoyoswitch.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
@@ -16,10 +18,13 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -34,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.IntConsumer;
 
 /** One screen, one section per game: status, capture and account cards for the selected game. */
 public final class MainActivity extends Activity {
@@ -55,6 +61,7 @@ public final class MainActivity extends Activity {
     private Button launchButton;
     private TextView logToggle;
     private int refreshGeneration;
+    private Dialog visibleDialog;
     private volatile boolean busy;
 
     @Override
@@ -197,6 +204,15 @@ public final class MainActivity extends Activity {
             Log.i("hoyoswitch", "SELFTEST " + verdict + " :: " + outcome);
             appendLog("自检结果：" + (rolledBack ? "回滚成功" : "回滚失败") + "；" + outcome);
         });
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (visibleDialog != null) {
+            visibleDialog.dismiss();
+            visibleDialog = null;
+        }
+        super.onDestroy();
     }
 
     @Override
@@ -780,44 +796,184 @@ public final class MainActivity extends Activity {
         return params;
     }
 
+    private int rippleColor() {
+        return (getColor(R.color.text_primary) & 0x00FFFFFF) | 0x22000000;
+    }
+
+    private Dialog baseDialog() {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            attributes.dimAmount = 0.55f;
+            window.setAttributes(attributes);
+        }
+        return dialog;
+    }
+
+    private LinearLayout dialogCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(surface(R.color.card_bg, R.color.card_bg, 28));
+        card.setPadding(dp(20), dp(20), dp(20), dp(16));
+        return card;
+    }
+
+    private TextView dialogTitle(String text) {
+        TextView title = new TextView(this);
+        title.setText(text);
+        title.setTextSize(18);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setTextColor(getColor(R.color.text_primary));
+        return title;
+    }
+
+    private TextView dialogMessage(String text) {
+        TextView message = new TextView(this);
+        message.setText(text);
+        message.setTextSize(13);
+        message.setTextColor(getColor(R.color.text_muted));
+        message.setLineSpacing(dp(3), 1f);
+        return message;
+    }
+
+    private void showDialog(Dialog dialog, LinearLayout card) {
+        if (visibleDialog != null) {
+            visibleDialog.dismiss();
+        }
+        visibleDialog = dialog;
+        dialog.setOnDismissListener(dismissed -> {
+            if (visibleDialog == dialog) {
+                visibleDialog = null;
+            }
+        });
+        dialog.setContentView(card);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            DisplayMetrics metrics = getResources().getDisplayMetrics();
+            int width = Math.min(metrics.widthPixels - dp(48), dp(520));
+            window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private void showSheet(String title, String[] items, IntConsumer onPick) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle(title), withBottomMargin(matchWrap(), dp(8)));
+        for (int index = 0; index < items.length; index++) {
+            final int picked = index;
+            TextView row = new TextView(this);
+            row.setText(items[index]);
+            row.setTextSize(15);
+            row.setTextColor(getColor(R.color.text_primary));
+            row.setPadding(dp(12), dp(14), dp(12), dp(14));
+            row.setBackground(new RippleDrawable(ColorStateList.valueOf(rippleColor()), null, null));
+            row.setOnClickListener(view -> {
+                dialog.dismiss();
+                onPick.accept(picked);
+            });
+            card.addView(row, matchWrap());
+        }
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        card.addView(cancel, withTopMargin(matchWrap(), dp(10)));
+        showDialog(dialog, card);
+    }
+
+    private void showConfirm(String title, String message, String positiveLabel, Runnable onPositive) {
+        showConfirm(title, message, positiveLabel, onPositive, null);
+    }
+
+    private void showConfirm(String title, String message, String positiveLabel, Runnable onPositive,
+                             Runnable onCancel) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle(title), matchWrap());
+        card.addView(dialogMessage(message), withTopMargin(withBottomMargin(matchWrap(), dp(16)), dp(8)));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> {
+            dialog.dismiss();
+            if (onCancel != null) {
+                onCancel.run();
+            }
+        });
+        Button positive = pill(positiveLabel, true);
+        positive.setOnClickListener(view -> {
+            dialog.dismiss();
+            onPositive.run();
+        });
+        row.addView(cancel, weightWrap(1f, dp(4)));
+        row.addView(positive, weightWrap(1f, dp(4)));
+        card.addView(row, withTopMargin(matchWrap(), dp(12)));
+        dialog.setOnCancelListener(dismissed -> {
+            if (onCancel != null) {
+                onCancel.run();
+            }
+        });
+        showDialog(dialog, card);
+    }
+
+    private static LinearLayout.LayoutParams withTopMargin(LinearLayout.LayoutParams params,
+                                                           int margin) {
+        params.topMargin = margin;
+        return params;
+    }
+
     private void showCardMenu(SnapshotStore.Snapshot snapshot) {
         Log.i("hoyoswitch", "card menu: " + snapshot.name);
         String[] items = {"重命名", "删除快照", "历史版本"};
-        new AlertDialog.Builder(this)
-                .setTitle(snapshot.name)
-                .setItems(items, (dialog, which) -> {
-                    if (which == 0) {
-                        renameDialog(snapshot);
-                    } else if (which == 1) {
-                        deleteDialog(snapshot);
-                    } else {
-                        historyDialog(snapshot);
-                    }
-                })
-                .show();
+        showSheet(snapshot.name, items, which -> {
+            if (which == 0) {
+                renameDialog(snapshot);
+            } else if (which == 1) {
+                deleteDialog(snapshot);
+            } else {
+                historyDialog(snapshot);
+            }
+        });
     }
 
     private void renameDialog(SnapshotStore.Snapshot snapshot) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("重命名快照"), withBottomMargin(matchWrap(), dp(12)));
+
         EditText input = new EditText(this);
         input.setText(snapshot.name);
-        input.setSelection(input.getText().length());
-        new AlertDialog.Builder(this)
-                .setTitle("重命名快照")
-                .setView(input)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (dialog, which) -> runOp("重命名",
-                        () -> store.rename(snapshot, input.getText().toString())))
-                .show();
+        input.setSingleLine(true);
+        input.setTextSize(14);
+        input.setTextColor(getColor(R.color.text_primary));
+        input.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        input.setPadding(dp(14), dp(10), dp(14), dp(10));
+        input.setSelection(snapshot.name.length());
+        card.addView(input, withBottomMargin(matchWrap(), dp(14)));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        Button save = pill("保存", true);
+        save.setOnClickListener(view -> {
+            dialog.dismiss();
+            runOp("重命名", () -> store.rename(snapshot, input.getText().toString()));
+        });
+        row.addView(cancel, weightWrap(1f, dp(4)));
+        row.addView(save, weightWrap(1f, dp(4)));
+        card.addView(row, matchWrap());
+        showDialog(dialog, card);
     }
 
     private void deleteDialog(SnapshotStore.Snapshot snapshot) {
-        new AlertDialog.Builder(this)
-                .setTitle("删除快照")
-                .setMessage("将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("删除", (dialog, which) -> runOp("删除快照",
-                        () -> store.delete(snapshot)))
-                .show();
+        showConfirm("删除快照",
+                "将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。",
+                "删除",
+                () -> runOp("删除快照", () -> store.delete(snapshot)));
     }
 
     private void historyDialog(SnapshotStore.Snapshot snapshot) {
@@ -830,20 +986,15 @@ public final class MainActivity extends Activity {
         for (int index = 0; index < entries.size(); index++) {
             labels[index] = entries.get(index).label;
         }
-        new AlertDialog.Builder(this)
-                .setTitle("历史版本 · " + snapshot.name)
-                .setItems(labels, (dialog, which) -> confirmHistory(snapshot, entries.get(which)))
-                .show();
+        showSheet("历史版本 · " + snapshot.name, labels,
+                which -> confirmHistory(snapshot, entries.get(which)));
     }
 
     private void confirmHistory(SnapshotStore.Snapshot snapshot, SnapshotStore.HistoryEntry entry) {
-        new AlertDialog.Builder(this)
-                .setTitle("回滚到 " + entry.label)
-                .setMessage("快照内容会替换为该历史版本，当前版本先归档保留。继续？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("回滚", (dialog, which) -> runOp("回滚历史版本",
-                        () -> store.restoreHistory(snapshot, entry)))
-                .show();
+        showConfirm("回滚到 " + entry.label,
+                "快照内容会替换为该历史版本，当前版本先归档保留。继续？",
+                "回滚",
+                () -> runOp("回滚历史版本", () -> store.restoreHistory(snapshot, entry)));
     }
 
     private void confirmSwitch(SnapshotStore.Snapshot target) {
@@ -868,20 +1019,16 @@ public final class MainActivity extends Activity {
     }
 
     private void askSwitch(SnapshotStore.Snapshot target, String currentLabel) {
-        new AlertDialog.Builder(this)
-                .setTitle("切换" + target.game.label + "账号")
-                .setMessage("当前账号：" + currentLabel
+        Runnable reset = () -> {
+            busy = false;
+            refresh();
+        };
+        showConfirm("切换" + target.game.label + "账号",
+                "当前账号：" + currentLabel
                         + "\n目标账号：" + target.name
-                        + "\n\n将先停止游戏，再写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？")
-                .setNegativeButton("取消", (dialog, which) -> {
-                    busy = false;
-                    refresh();
-                })
-                .setOnCancelListener(dialog -> {
-                    busy = false;
-                    refresh();
-                })
-                .setPositiveButton("切换", (dialog, which) -> new Thread(() -> {
+                        + "\n\n将先停止游戏，再写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？",
+                "切换",
+                () -> new Thread(() -> {
                     try {
                         if (target.game.isRunning()) {
                             target.game.forceStop();
@@ -894,8 +1041,8 @@ public final class MainActivity extends Activity {
                         busy = false;
                         refresh();
                     }
-                }).start())
-                .show();
+                }).start(),
+                reset);
     }
 
     private void capture() {
