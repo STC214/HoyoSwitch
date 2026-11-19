@@ -20,10 +20,13 @@ final class GameProfile {
     final String identityPrefs;
     /** Prefs file holding the account token, keyed by mid; null when absent. */
     final String tokenPrefs;
+    /** Account database whose newest row is the current account; null when absent. */
+    final String accountDb;
 
     private GameProfile(String label, String pkg, String activity, List<String> files,
                         List<String> switchFiles, boolean supported,
-                        String loginPrefs, String identityPrefs, String tokenPrefs) {
+                        String loginPrefs, String identityPrefs, String tokenPrefs,
+                        String accountDb) {
         this.label = label;
         this.pkg = pkg;
         this.activity = activity;
@@ -33,6 +36,7 @@ final class GameProfile {
         this.loginPrefs = loginPrefs;
         this.identityPrefs = identityPrefs;
         this.tokenPrefs = tokenPrefs;
+        this.accountDb = accountDb;
     }
 
     /** 星铁：唯一验证过 4 文件切换的游戏。 */
@@ -58,6 +62,7 @@ final class GameProfile {
             true,
             "shared_prefs/porte_sdk_account_PRODUCT.xml",
             "shared_prefs/combo_widget.xml",
+            null,
             null);
 
     /** 原神 7.2：无 combo_widget，账号 token 存在按 mid 命名的 prefs key 里。 */
@@ -82,11 +87,12 @@ final class GameProfile {
             true,
             null,
             null,
-            "shared_prefs/porte_sdk_token_PRODUCT.xml");
+            "shared_prefs/porte_sdk_token_PRODUCT.xml",
+            "databases/PORTE_ACCOUNT_PRODUCT.db");
 
     static final GameProfile ZZZ = new GameProfile(
             "绝区零", "com.miHoYo.Nap", "",
-            Collections.emptyList(), Collections.emptyList(), false, null, null, null);
+            Collections.emptyList(), Collections.emptyList(), false, null, null, null, null);
 
     static final List<GameProfile> ALL = Arrays.asList(GENSHIN, STARRAIL, ZZZ);
 

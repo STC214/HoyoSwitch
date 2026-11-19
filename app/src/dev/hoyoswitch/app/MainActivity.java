@@ -1140,7 +1140,8 @@ public final class MainActivity extends Activity {
         showConfirm("切换" + target.game.label + "账号",
                 "当前账号：" + currentLabel
                         + "\n目标账号：" + target.name
-                        + "\n\n将先停止游戏，再写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？",
+                        + "\n\n将先停止游戏，再写入该游戏的 "
+                        + target.game.switchFiles.size() + " 个账号文件，并自动保存切换前状态。继续？",
                 "切换",
                 () -> new Thread(() -> {
                     try {

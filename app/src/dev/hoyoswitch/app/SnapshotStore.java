@@ -31,6 +31,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Per-game snapshots of the state files. Payloads are encrypted with a Keystore key, every write
@@ -310,18 +312,27 @@ final class SnapshotStore {
             return current;
         }
         // Games without a combo widget identify the account from the token prefs key.
-        if (game.identityPrefs == null && game.tokenPrefs != null) {
-            byte[] token = readDevice(game.path(game.tokenPrefs));
-            if (token == null) {
-                current.note = "读不到登录状态文件";
-                return current;
+        if (game.accountDb != null) {
+            byte[] db = readDevice(game.path(game.accountDb));
+            if (db != null) {
+                String mid = dbCurrentMid(db);
+                if (!mid.isEmpty()) {
+                    current.loggedIn = true;
+                    current.mid = mid;
+                    return current;
+                }
             }
-            String mid = tokenMid(token);
-            if (mid.isEmpty()) {
-                return current;
+            if (game.tokenPrefs != null) {
+                byte[] token = readDevice(game.path(game.tokenPrefs));
+                if (token != null) {
+                    String mid = tokenMid(token);
+                    if (!mid.isEmpty()) {
+                        current.loggedIn = true;
+                        current.mid = mid;
+                        return current;
+                    }
+                }
             }
-            current.loggedIn = true;
-            current.mid = mid;
             return current;
         }
         String statusPath = game.loginPrefs;
@@ -361,6 +372,16 @@ final class SnapshotStore {
 
     private String readAccountMid(Snapshot snapshot) throws IOException {
         GameProfile game = snapshot.game;
+        if (game.accountDb != null) {
+            try {
+                String mid = dbCurrentMid(readSnapshot(snapshot, game.accountDb));
+                if (!mid.isEmpty()) {
+                    return mid;
+                }
+            } catch (IOException ignored) {
+                // Fall through to the token key.
+            }
+        }
         if (game.tokenPrefs != null) {
             return tokenMid(readSnapshot(snapshot, game.tokenPrefs));
         }
@@ -370,6 +391,32 @@ final class SnapshotStore {
             return account == null ? "" : accountField(account, "mid");
         }
         return "";
+    }
+
+    /**
+     * SQLite stores each account row as {@code <mid><aid><type><13-digit timestamp><blob>}; the
+     * newest timestamp is the account the game is currently on.
+     */
+    private static final Pattern ACCOUNT_ROW =
+            Pattern.compile("([0-9a-z_]+_mhy)(\\d+)(\\d{13})");
+
+    private static String dbCurrentMid(byte[] db) {
+        String text = new String(db, StandardCharsets.ISO_8859_1);
+        Matcher matcher = ACCOUNT_ROW.matcher(text);
+        String bestMid = "";
+        long bestTimestamp = -1;
+        while (matcher.find()) {
+            try {
+                long timestamp = Long.parseLong(matcher.group(3));
+                if (timestamp > bestTimestamp) {
+                    bestTimestamp = timestamp;
+                    bestMid = matcher.group(1);
+                }
+            } catch (NumberFormatException ignored) {
+                // Skip malformed rows.
+            }
+        }
+        return bestMid;
     }
 
     /** Genshin stores one token per account under {@code <mid>_mhy_porte_cookie_token_key}. */
