@@ -273,3 +273,5 @@
 - 补充（00:43–00:50）：按第五轮审查修复 5 项，发布 1.4.1。P1：① 数据库连读命令改为 =0 … cat || f=1 … exit \，中途读取失败不再被吞；② 分组采集不再依赖 ccountDb，所有 .db 与 mihoyo_account 均与边车连读（星铁主库纳入）。P2：③ 历史迁移重名时用纯数字时间戳，isHistoryOf 仍识别；④ PC 恢复先拒绝边车冲突再写入，避免「新主库+旧 WAL」；⑤ 分组读取加显式存在标志，零字节存在文件不再当缺失。验证：单测 26 通过；1.4.1 正式包覆盖安装 Root 保留，星铁拍摄 2017ms、清单 12 项（PORTE db+journal 存在、WAL/SHM 缺失、mihoyo_account 已分组）。
 
 - 补充（00:50–01:00）：按第六轮审查修复 3 项并修复真机发现的 UTF-16 账号库问题，发布 1.4.2。① PC 边车预检跳过「已纳入恢复范围」的边车，完整恢复不再误拦截本应恢复的 journal（新增 2 个测试）；② migrateHistory 返回布尔，迁移失败不再 delete 旧历史；③ 分组协议改长度前缀帧，二进制含分隔符不再截断。真机验证 #3 时发现：账号库是 UTF-16 编码，Android SQLite 读不了（一直报 READONLY_ROLLBACK / no such table），egexMid 增加 UTF-16LE/BE 解码，SQLite 失败时按编码扫描恢复账号识别；验证绝区零识别为具体卡片而非 token 回退。
+
+- 补充（01:04–01:10）：按第七轮审查修复 3 项，发布 1.4.3。① 分组分帧去掉 stat -c %s 后多余的 printf '\\n'，内容不再错位；② PC sidecar_issues 只跳过「在恢复范围且 present」的边车，present=false 的旧边车仍检测（新增测试）；③ UTF-16 编码判定改用 SQLite 头 56–59 的 text-encoding 字段，BOM 仅回退。验证：单测 29 通过；绝区零拍摄后快照 DB sha256 与设备一致（20480 字节），分帧无错位。

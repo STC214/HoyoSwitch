@@ -366,7 +366,7 @@ final class SnapshotStore {
             String path = game.path(relative);
             script.append("printf '\\n--HSN1DB--").append(relative).append("\\n'; ");
             script.append("if [ -e ").append(quote(path)).append(" ]; then printf 'P'; stat -c %s ")
-                    .append(quote(path)).append("; printf '\\n'; cat ").append(quote(path))
+                    .append(quote(path)).append("; cat ").append(quote(path))
                     .append(" || f=1; else printf 'A'; fi; ");
         }
         script.append("exit $f");
@@ -679,13 +679,21 @@ final class SnapshotStore {
     }
 
     private static String regexMid(byte[] db) {
-        // SQLite stores TEXT in UTF-16 when the database header has a UTF-16 BOM; the account
-        // row's mid/type/timestamp then appear as UTF-16 code units. Decode accordingly so the
-        // ASCII regex still matches, and fall back to a byte-preserving decode otherwise.
+        // SQLite's text encoding lives at offset 56-59 (1=UTF-8, 2=UTF-16LE, 3=UTF-16BE), which is
+        // authoritative; the BOM at the start of the header is a fallback. Android's SQLite cannot
+        // open UTF-16 databases, so the byte scan must decode the account row correctly.
+        int encoding = db.length > 59
+                ? (db[56] & 0xFF) << 24 | (db[57] & 0xFF) << 16
+                | (db[58] & 0xFF) << 8 | (db[59] & 0xFF)
+                : 0;
+        boolean utf16le = encoding == 2
+                || (db.length >= 2 && db[0] == (byte) 0xFF && db[1] == (byte) 0xFE);
+        boolean utf16be = encoding == 3
+                || (db.length >= 2 && db[0] == (byte) 0xFE && db[1] == (byte) 0xFF);
         String text;
-        if (db.length >= 2 && db[0] == (byte) 0xFF && db[1] == (byte) 0xFE) {
+        if (utf16le) {
             text = new String(db, StandardCharsets.UTF_16LE);
-        } else if (db.length >= 2 && db[0] == (byte) 0xFE && db[1] == (byte) 0xFF) {
+        } else if (utf16be) {
             text = new String(db, StandardCharsets.UTF_16BE);
         } else {
             text = new String(db, StandardCharsets.ISO_8859_1);

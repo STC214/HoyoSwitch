@@ -160,8 +160,9 @@ def is_database(rel):
 def sidecar_issues(device, manifest, scope):
     """Problems with journal/WAL/SHM for databases in scope (stale or mismatched sidecars).
 
-    Sidecars that are themselves in scope are skipped: the restore loop will write them, so a
-    missing/different sidecar is not a reason to block before restoring.
+    A sidecar is skipped only when it is both in scope and marked present in the snapshot, because
+    that is exactly what the restore loop will write. A sidecar absent from the snapshot but still
+    on the device is stale no matter whether its path happens to be in scope.
     """
     present = {entry['path']: entry for entry in manifest['files'] if entry['present']}
     issues = []
@@ -170,10 +171,10 @@ def sidecar_issues(device, manifest, scope):
             continue
         for suffix in ('-journal', '-wal', '-shm'):
             side = rel + suffix
-            if side in scope:
-                continue
             info = device.info(f'{DATA_DIR}/{side}')
             if side in present:
+                if side in scope:
+                    continue  # restore will write this sidecar
                 snap = present[side]
                 if info is None:
                     issues.append(f'{side}: missing but snapshot expects it')

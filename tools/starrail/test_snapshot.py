@@ -83,7 +83,11 @@ class SidecarIssuesTest(unittest.TestCase):
                 self.present = set(present)
 
             def info(self, path):
-                return None if path not in self.present else dict(
+                rel = path
+                prefix = snapshot.DATA_DIR + '/'
+                if rel.startswith(prefix):
+                    rel = rel[len(prefix):]
+                return None if rel not in self.present else dict(
                     uid='1', gid='1', mode='660', context='u:object_r:x:s0', size=0, mtime=0)
 
             def read(self, path):
@@ -112,6 +116,19 @@ class SidecarIssuesTest(unittest.TestCase):
         issues = snapshot.sidecar_issues(device, manifest, scope)
         self.assertEqual(issues, ['databases/PORTE_ACCOUNT_PRODUCT.db-journal: '
                                   'missing but snapshot expects it'])
+
+    def test_stale_sidecar_marked_absent_but_in_scope_is_flagged(self):
+        manifest = {'files': [
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db', 'present': True, 'sha256': 'x'},
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db-journal', 'present': False},
+        ]}
+        scope = {'databases/PORTE_ACCOUNT_PRODUCT.db',
+                 'databases/PORTE_ACCOUNT_PRODUCT.db-journal'}
+        device = self._device(present=('databases/PORTE_ACCOUNT_PRODUCT.db',
+                                       'databases/PORTE_ACCOUNT_PRODUCT.db-journal'))
+        issues = snapshot.sidecar_issues(device, manifest, scope)
+        self.assertEqual(issues, ['databases/PORTE_ACCOUNT_PRODUCT.db-journal: '
+                                  'present but absent from snapshot'])
 
 
 if __name__ == '__main__':
