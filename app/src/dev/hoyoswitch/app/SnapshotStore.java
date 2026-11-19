@@ -364,6 +364,28 @@ final class SnapshotStore {
         }
     }
 
+    /**
+     * Housekeeping: removes abandoned directories that never got a manifest (interrupted
+     * captures) and trims snapshots created by the self tests.
+     */
+    void cleanup(GameProfile game) {
+        File base = dirFor(game);
+        File[] children = base.listFiles();
+        long cutoff = System.currentTimeMillis() - 10 * 60 * 1000L;
+        if (children != null) {
+            for (File child : children) {
+                if (!child.isDirectory() || HISTORY.equals(child.getName())) {
+                    continue;
+                }
+                if (!new File(child, MANIFEST).isFile() && child.lastModified() < cutoff) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        pruneNamed(game, "回滚自检基线", 1);
+        pruneNamed(game, "切换前自动备份", 2);
+    }
+
     static final class HistoryEntry {
         File dir;
         long time;

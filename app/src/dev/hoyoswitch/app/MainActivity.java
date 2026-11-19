@@ -607,6 +607,7 @@ public final class MainActivity extends Activity {
                 running = false;
                 version = "";
             }
+            store.cleanup(selected);
             snapshots = store.list(selected);
             try {
                 current = store.detectCurrent(selected);
@@ -713,9 +714,12 @@ public final class MainActivity extends Activity {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             boolean isCurrent = snapshot.id.equals(currentId);
-            card.setBackground(isCurrent
+            GradientDrawable cardFill = isCurrent
                     ? surface(R.color.card_bg, R.color.accent, 26)
-                    : surface(R.color.card_bg, R.color.card_bg, 26));
+                    : surface(R.color.card_bg, R.color.card_bg, 26);
+            card.setBackground(ripple(cardFill));
+            card.setClickable(true);
+            card.setOnClickListener(view -> showCardMenu(snapshot));
             int cardPad = dp(20);
             card.setPadding(cardPad, dp(18), cardPad, dp(18));
 
@@ -757,6 +761,7 @@ public final class MainActivity extends Activity {
                     () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
             Button moreButton = pill("⋯", false);
             moreButton.setContentDescription("更多操作：" + snapshot.name);
+            moreButton.setOnClickListener(view -> showCardMenu(snapshot));
             row.addView(updateButton, weightWrap(1f, dp(4)));
             LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(56),
                     ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -776,6 +781,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCardMenu(SnapshotStore.Snapshot snapshot) {
+        Log.i("hoyoswitch", "card menu: " + snapshot.name);
         String[] items = {"重命名", "删除快照", "历史版本"};
         new AlertDialog.Builder(this)
                 .setTitle(snapshot.name)
