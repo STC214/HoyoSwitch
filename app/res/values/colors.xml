@@ -8,4 +8,6 @@
     <color name="text_muted">#9BA4B5</color>
     <color name="log_bg">#12151C</color>
     <color name="pill_bg">#16203A</color>
+    <color name="danger">#FF7A7A</color>
+    <color name="danger_tonal">#3A1E22</color>
 </resources>

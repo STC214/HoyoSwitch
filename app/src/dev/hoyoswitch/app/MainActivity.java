@@ -39,7 +39,6 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.IntConsumer;
 
 /** One screen, one section per game: status, capture and account cards for the selected game. */
 public final class MainActivity extends Activity {
@@ -860,36 +859,17 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void showSheet(String title, String[] items, IntConsumer onPick) {
-        Dialog dialog = baseDialog();
-        LinearLayout card = dialogCard();
-        card.addView(dialogTitle(title), withBottomMargin(matchWrap(), dp(8)));
-        for (int index = 0; index < items.length; index++) {
-            final int picked = index;
-            TextView row = new TextView(this);
-            row.setText(items[index]);
-            row.setTextSize(15);
-            row.setTextColor(getColor(R.color.text_primary));
-            row.setPadding(dp(12), dp(14), dp(12), dp(14));
-            row.setBackground(new RippleDrawable(ColorStateList.valueOf(rippleColor()), null, null));
-            row.setOnClickListener(view -> {
-                dialog.dismiss();
-                onPick.accept(picked);
-            });
-            card.addView(row, matchWrap());
-        }
-        Button cancel = pill("取消", false);
-        cancel.setOnClickListener(view -> dialog.dismiss());
-        card.addView(cancel, withTopMargin(matchWrap(), dp(10)));
-        showDialog(dialog, card);
-    }
-
     private void showConfirm(String title, String message, String positiveLabel, Runnable onPositive) {
         showConfirm(title, message, positiveLabel, onPositive, null);
     }
 
     private void showConfirm(String title, String message, String positiveLabel, Runnable onPositive,
                              Runnable onCancel) {
+        showConfirm(title, message, positiveLabel, false, onPositive, onCancel);
+    }
+
+    private void showConfirm(String title, String message, String positiveLabel,
+                             boolean destructive, Runnable onPositive, Runnable onCancel) {
         Dialog dialog = baseDialog();
         LinearLayout card = dialogCard();
         card.addView(dialogTitle(title), matchWrap());
@@ -903,7 +883,7 @@ public final class MainActivity extends Activity {
                 onCancel.run();
             }
         });
-        Button positive = pill(positiveLabel, true);
+        Button positive = destructive ? dangerPill(positiveLabel) : pill(positiveLabel, true);
         positive.setOnClickListener(view -> {
             dialog.dismiss();
             onPositive.run();
@@ -919,24 +899,111 @@ public final class MainActivity extends Activity {
         showDialog(dialog, card);
     }
 
+    private Button dangerPill(String text) {
+        Button button = pill(text, true);
+        button.setBackground(ripple(surface(R.color.danger, R.color.danger, 24)));
+        button.setTextColor(getColor(R.color.on_accent));
+        return button;
+    }
+
     private static LinearLayout.LayoutParams withTopMargin(LinearLayout.LayoutParams params,
                                                            int margin) {
         params.topMargin = margin;
         return params;
     }
 
+    private static final class Action {
+        final int icon;
+        final String title;
+        final String subtitle;
+        final boolean destructive;
+        final Runnable onClick;
+
+        Action(int icon, String title, String subtitle, boolean destructive, Runnable onClick) {
+            this.icon = icon;
+            this.title = title;
+            this.subtitle = subtitle;
+            this.destructive = destructive;
+            this.onClick = onClick;
+        }
+    }
+
+    private void showActionSheet(String title, List<Action> actions) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        TextView titleView = dialogTitle(title);
+        titleView.setMaxLines(2);
+        titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        card.addView(titleView, withBottomMargin(matchWrap(), dp(10)));
+
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        for (Action action : actions) {
+            rows.addView(actionRow(dialog, action), withBottomMargin(matchWrap(), dp(4)));
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(rows);
+        int rowsHeight = Math.min(actions.size() * dp(70), dp(280));
+        card.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, rowsHeight));
+
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        card.addView(cancel, withTopMargin(matchWrap(), dp(12)));
+        showDialog(dialog, card);
+    }
+
+    private LinearLayout actionRow(Dialog dialog, Action action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(9), dp(10), dp(9));
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(rippleColor()), null, null));
+        row.setContentDescription(action.title + "，" + action.subtitle);
+        row.setOnClickListener(view -> {
+            dialog.dismiss();
+            action.onClick.run();
+        });
+
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(action.icon);
+        GradientDrawable iconBackground = new GradientDrawable();
+        iconBackground.setShape(GradientDrawable.OVAL);
+        iconBackground.setColor(getColor(action.destructive
+                ? R.color.danger_tonal : R.color.accent_tonal));
+        icon.setBackground(iconBackground);
+        icon.setPadding(dp(7), dp(7), dp(7), dp(7));
+        icon.setColorFilter(getColor(action.destructive ? R.color.danger : R.color.accent));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(38)));
+
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+        text.setPadding(dp(14), 0, 0, 0);
+        TextView titleView = new TextView(this);
+        titleView.setText(action.title);
+        titleView.setTextSize(15);
+        titleView.setTextColor(getColor(action.destructive ? R.color.danger : R.color.text_primary));
+        text.addView(titleView, matchWrap());
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText(action.subtitle);
+        subtitleView.setTextSize(12);
+        subtitleView.setTextColor(getColor(R.color.text_muted));
+        text.addView(subtitleView, matchWrap());
+        row.addView(text, weightWrap());
+        return row;
+    }
+
     private void showCardMenu(SnapshotStore.Snapshot snapshot) {
         Log.i("hoyoswitch", "card menu: " + snapshot.name);
-        String[] items = {"重命名", "删除快照", "历史版本"};
-        showSheet(snapshot.name, items, which -> {
-            if (which == 0) {
-                renameDialog(snapshot);
-            } else if (which == 1) {
-                deleteDialog(snapshot);
-            } else {
-                historyDialog(snapshot);
-            }
-        });
+        List<Action> actions = new ArrayList<>();
+        actions.add(new Action(R.drawable.ic_rename, "重命名", "修改卡片显示名称", false,
+                () -> renameDialog(snapshot)));
+        actions.add(new Action(R.drawable.ic_delete, "删除快照", "连同历史版本一起删除", true,
+                () -> deleteDialog(snapshot)));
+        actions.add(new Action(R.drawable.ic_history, "历史版本", "查看并回滚旧版本", false,
+                () -> historyDialog(snapshot)));
+        showActionSheet(snapshot.name, actions);
     }
 
     private void renameDialog(SnapshotStore.Snapshot snapshot) {
@@ -972,8 +1039,9 @@ public final class MainActivity extends Activity {
     private void deleteDialog(SnapshotStore.Snapshot snapshot) {
         showConfirm("删除快照",
                 "将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。",
-                "删除",
-                () -> runOp("删除快照", () -> store.delete(snapshot)));
+                "删除", true,
+                () -> runOp("删除快照", () -> store.delete(snapshot)),
+                null);
     }
 
     private void historyDialog(SnapshotStore.Snapshot snapshot) {
@@ -982,12 +1050,12 @@ public final class MainActivity extends Activity {
             toast("这个快照还没有历史版本");
             return;
         }
-        String[] labels = new String[entries.size()];
-        for (int index = 0; index < entries.size(); index++) {
-            labels[index] = entries.get(index).label;
+        List<Action> actions = new ArrayList<>();
+        for (SnapshotStore.HistoryEntry entry : entries) {
+            actions.add(new Action(R.drawable.ic_history, entry.label, "回滚到这个版本", false,
+                    () -> confirmHistory(snapshot, entry)));
         }
-        showSheet("历史版本 · " + snapshot.name, labels,
-                which -> confirmHistory(snapshot, entries.get(which)));
+        showActionSheet("历史版本 · " + snapshot.name, actions);
     }
 
     private void confirmHistory(SnapshotStore.Snapshot snapshot, SnapshotStore.HistoryEntry entry) {
