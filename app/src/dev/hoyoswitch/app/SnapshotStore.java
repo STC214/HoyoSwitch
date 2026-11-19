@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,8 +28,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Per-game snapshots of the state files. Every write is preceded by a byte-exact safety snapshot
- * and verified by re-reading the device; a failed verification rolls back.
+ * Per-game snapshots of the state files. Payloads are encrypted with a Keystore key, every write
+ * is preceded by a byte-exact safety snapshot and verified by re-reading the device.
  */
 final class SnapshotStore {
     static final class Entry {
@@ -64,7 +65,9 @@ final class SnapshotStore {
     }
 
     private static final String MANIFEST = "manifest.json";
-    private static final int VERSION = 1;
+    private static final String HISTORY = ".history";
+    private static final int HISTORY_KEEP = 3;
+    private static final int VERSION = 2;
 
     private final File root;
 
@@ -97,10 +100,10 @@ final class SnapshotStore {
             File destination = new File(new File(root, pkg), child.getName());
             File parent = destination.getParentFile();
             if (parent != null && (parent.isDirectory() || parent.mkdirs())
-                    && !destination.exists() && child.renameTo(destination)) {
-                continue;
+                    && !destination.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                child.renameTo(destination);
             }
-            // Leave it in place when the move fails; it simply will not be listed.
         }
     }
 
@@ -108,8 +111,25 @@ final class SnapshotStore {
         return new File(root, game.pkg);
     }
 
-    File fileOf(Snapshot snapshot, String relative) {
+    private File storedFile(Snapshot snapshot, String relative) {
+        return new File(new File(snapshot.dir, "files"), relative + ".enc");
+    }
+
+    private File legacyFile(Snapshot snapshot, String relative) {
         return new File(new File(snapshot.dir, "files"), relative);
+    }
+
+    /** Reads a stored payload, decrypting it; plaintext files from older builds still work. */
+    private byte[] readSnapshot(Snapshot snapshot, String relative) throws IOException {
+        File encrypted = storedFile(snapshot, relative);
+        if (encrypted.isFile()) {
+            return SnapshotCrypto.decrypt(readLocal(encrypted));
+        }
+        File plain = legacyFile(snapshot, relative);
+        if (plain.isFile()) {
+            return readLocal(plain);
+        }
+        throw new IOException("快照文件缺失: " + relative);
     }
 
     String capture(GameProfile game, String name) throws IOException {
@@ -171,13 +191,13 @@ final class SnapshotStore {
             entry.context = metadata.context;
             entry.mtime = metadata.mtime;
         }
-        File local = new File(new File(snapshot.dir, "files"), relative);
+        File local = storedFile(snapshot, relative);
         File parent = local.getParentFile();
         if (parent != null && !parent.mkdirs() && !parent.isDirectory()) {
             throw new IOException("无法创建目录: " + parent);
         }
-        writeLocal(local, content.out);
-        if (!sha256(readLocal(local)).equals(entry.sha256)) {
+        writeLocal(local, SnapshotCrypto.encrypt(content.out));
+        if (!sha256(SnapshotCrypto.decrypt(readLocal(local))).equals(entry.sha256)) {
             throw new IOException("本地副本校验失败: " + relative);
         }
         return entry;
@@ -190,13 +210,14 @@ final class SnapshotStore {
             return snapshots;
         }
         for (File child : children) {
-            if (!child.isDirectory() || !new File(child, MANIFEST).isFile()) {
+            if (!child.isDirectory() || HISTORY.equals(child.getName())
+                    || !new File(child, MANIFEST).isFile()) {
                 continue;
             }
             try {
                 snapshots.add(readManifest(game, child));
             } catch (IOException | JSONException ignored) {
-                // Damaged snapshots are skipped here; verify() reports them when opened.
+                // Damaged snapshots are skipped here.
             }
         }
         snapshots.sort((left, right) -> Long.compare(right.createdAt, left.createdAt));
@@ -262,7 +283,7 @@ final class SnapshotStore {
                 continue;
             }
             try {
-                byte[] widget = readLocal(fileOf(snapshot, relative));
+                byte[] widget = readSnapshot(snapshot, relative);
                 String account = preferenceValue(widget, "string", "account");
                 return account == null ? "" : accountField(account, "mid");
             } catch (IOException error) {
@@ -273,12 +294,13 @@ final class SnapshotStore {
     }
 
     /**
-     * Re-captures the device state into an existing snapshot, keeping its id and name so the
-     * account card stays in place.
+     * Re-captures the device state into an existing snapshot, keeping its id and name. The previous
+     * version is archived first so an update is never a one-way change.
      */
     String updateSnapshot(Snapshot target) throws IOException {
         String tempId = capture(target.game, target.name);
         File temp = new File(dirFor(target.game), tempId);
+        archive(target.dir);
         deleteRecursively(target.dir);
         if (!temp.renameTo(target.dir)) {
             throw new IOException("无法替换旧快照目录: " + target.id);
@@ -292,6 +314,25 @@ final class SnapshotStore {
             throw new IOException("更新后的快照清单损坏", error);
         }
         return target.id;
+    }
+
+    private void archive(File dir) {
+        File history = new File(dir.getParentFile(), HISTORY);
+        if (!history.isDirectory() && !history.mkdirs()) {
+            return;
+        }
+        File destination = new File(history, dir.getName() + "-" + System.currentTimeMillis());
+        if (!dir.renameTo(destination)) {
+            return;
+        }
+        File[] versions = history.listFiles();
+        if (versions == null || versions.length <= HISTORY_KEEP) {
+            return;
+        }
+        Arrays.sort(versions, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
+        for (int index = HISTORY_KEEP; index < versions.length; index++) {
+            deleteRecursively(versions[index]);
+        }
     }
 
     /** Restores the switch files of {@code target}, with safety snapshot and rollback. */
@@ -308,7 +349,7 @@ final class SnapshotStore {
                 if (entry == null || !entry.present) {
                     continue;
                 }
-                byte[] data = readLocal(fileOf(target, relative));
+                byte[] data = readSnapshot(target, relative);
                 if (!sha256(data).equals(entry.sha256)) {
                     throw new IOException("快照文件已损坏: " + relative);
                 }
@@ -365,7 +406,7 @@ final class SnapshotStore {
             if (current != null && sha256(current).equals(entry.sha256)) {
                 continue;
             }
-            byte[] data = readLocal(fileOf(snapshot, entry.path));
+            byte[] data = readSnapshot(snapshot, entry.path);
             if (!sha256(data).equals(entry.sha256)) {
                 throw new IOException("快照文件已损坏: " + entry.path);
             }
@@ -454,6 +495,7 @@ final class SnapshotStore {
             root.put("name", snapshot.name);
             root.put("createdAt", snapshot.createdAt);
             root.put("package", snapshot.game.pkg);
+            root.put("encrypted", true);
             JSONArray files = new JSONArray();
             for (Entry entry : snapshot.entries.values()) {
                 JSONObject item = new JSONObject();
