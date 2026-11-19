@@ -62,6 +62,23 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         store = new SnapshotStore(this);
         setContentView(buildLayout());
+        if (state != null) {
+            game = GameProfile.byPackage(state.getString("ui.game", GameProfile.STARRAIL.pkg));
+            String log = state.getString("ui.log", "");
+            if (logView != null && !log.isEmpty()) {
+                logView.setText(log);
+            }
+            if (logScroll != null && !state.getBoolean("ui.logVisible", true)) {
+                logScroll.setVisibility(View.GONE);
+                if (logSection != null) {
+                    logSection.setVisibility(View.GONE);
+                }
+                if (logToggle != null) {
+                    logToggle.setText("显示日志");
+                }
+            }
+            renderTabs();
+        }
         String selftest = getIntent().getStringExtra("selftest");
         if ("cardops".equals(selftest)) {
             main.postDelayed(this::runCardOpsTest, 1200);
@@ -183,12 +200,114 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putString("ui.game", game.pkg);
+        if (logView != null) {
+            out.putString("ui.log", logView.getText().toString());
+        }
+        out.putBoolean("ui.logVisible",
+                logScroll != null && logScroll.getVisibility() == View.VISIBLE);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         refresh();
     }
 
     private LinearLayout buildLayout() {
+        LinearLayout portrait = buildSingleColumn();
+        boolean wide = getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        return wide ? buildTwoColumns(portrait) : portrait;
+    }
+
+    /**
+     * Landscape gets two independently scrolling columns: controls on the left, account cards and
+     * the log on the right. The single-column tree is built first and then re-parented, so both
+     * orientations share one construction path.
+     */
+    private LinearLayout buildTwoColumns(LinearLayout root) {
+        // Portrait order: header, headline, subline, status pill, scrolling content.
+        View header = root.getChildAt(0);
+        View headline = root.getChildAt(1);
+        View subline = root.getChildAt(2);
+        View status = root.getChildAt(3);
+        ScrollView scroll = (ScrollView) root.getChildAt(4);
+        LinearLayout content = (LinearLayout) scroll.getChildAt(0);
+
+        // Content order: section 01, tabs, section 02, controls, section 03, cards, section 04, log.
+        View section01 = content.getChildAt(0);
+        View tabs = content.getChildAt(1);
+        View section02 = content.getChildAt(2);
+        View controls = content.getChildAt(3);
+        View section03 = content.getChildAt(4);
+        View cards = content.getChildAt(5);
+        View section04 = content.getChildAt(6);
+        View log = content.getChildAt(7);
+
+        root.removeAllViews();
+        content.removeAllViews();
+
+        if (headline != null) {
+            // Landscape trades the marketing headline for functional space.
+            headline.setVisibility(View.GONE);
+        }
+        if (subline != null) {
+            subline.setVisibility(View.GONE);
+        }
+        if (status instanceof LinearLayout) {
+            status.setPadding(dp(14), dp(10), dp(14), dp(10));
+        }
+        if (statusView != null) {
+            statusView.setTextSize(12);
+        }
+        for (View block : new View[] {section01, section02, section03, section04}) {
+            if (block instanceof TextView) {
+                block.setPadding(0, dp(12), 0, dp(6));
+            }
+        }
+
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(header, matchWrap());
+        left.addView(headline, matchWrap());
+        left.addView(subline, matchWrap());
+        left.addView(status, matchWrap());
+        left.addView(section01, matchWrap());
+        left.addView(tabs, matchWrap());
+        left.addView(section02, matchWrap());
+        left.addView(controls, matchWrap());
+
+        ScrollView leftScroll = new ScrollView(this);
+        leftScroll.addView(left);
+        LinearLayout.LayoutParams leftParams = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 0.95f);
+        leftParams.rightMargin = dp(16);
+
+        LinearLayout right = new LinearLayout(this);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.addView(section03, matchWrap());
+        right.addView(cards, matchWrap());
+        right.addView(section04, matchWrap());
+        right.addView(log, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+
+        ScrollView rightScroll = new ScrollView(this);
+        rightScroll.addView(right);
+        // Focus restore can scroll a column down on first layout; start both at the top.
+        leftScroll.post(() -> leftScroll.scrollTo(0, 0));
+        rightScroll.post(() -> rightScroll.scrollTo(0, 0));
+
+        root.setOrientation(LinearLayout.HORIZONTAL);
+        root.addView(leftScroll, leftParams);
+        root.addView(rightScroll, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1.05f));
+        return root;
+    }
+
+    private LinearLayout buildSingleColumn() {
         int pad = dp(24);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
