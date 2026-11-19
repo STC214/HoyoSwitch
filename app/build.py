@@ -35,6 +35,10 @@ def release_credentials():
         print(f'Release keystore created: {RELEASE_KEY}', flush=True)
         print('BACK THIS FILE UP: losing it means no future updates.', flush=True)
     values = {}
+    if not RELEASE_PROPS.exists():
+        raise SystemExit(
+            f'Release keystore exists but {RELEASE_PROPS} is missing; restore the password '
+            'file (or delete the keystore to generate a new signing identity).')
     for line in RELEASE_PROPS.read_text(encoding='utf-8').splitlines():
         if '=' in line:
             name, value = line.split('=', 1)
