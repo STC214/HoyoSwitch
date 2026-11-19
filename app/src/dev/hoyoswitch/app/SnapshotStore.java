@@ -1,6 +1,7 @@
 package dev.hoyoswitch.app;
 
 import android.content.Context;
+import android.util.Base64;
 import android.util.Log;
 import android.util.Xml;
 
@@ -56,6 +57,9 @@ final class SnapshotStore {
         String id;
         String name;
         long createdAt;
+        long lastUsedAt;
+        String loginName = "";
+        String passwordEnc = "";
         File dir;
         final Map<String, Entry> entries = new LinkedHashMap<>();
 
@@ -459,6 +463,9 @@ final class SnapshotStore {
             Snapshot refreshed = readManifest(target.game, target.dir);
             refreshed.id = target.id;
             refreshed.name = target.name;
+            refreshed.lastUsedAt = target.lastUsedAt;
+            refreshed.loginName = target.loginName;
+            refreshed.passwordEnc = target.passwordEnc;
             saveManifest(refreshed);
         } catch (JSONException error) {
             throw new IOException("更新后的快照清单损坏", error);
@@ -554,6 +561,16 @@ final class SnapshotStore {
                 // Safety captures must not become the card's permanent name.
                 renameSafely(primary, isSessionName(snapshot.name) ? primary.id : snapshot.name);
             }
+            if (primary.loginName.isEmpty() && !snapshot.loginName.isEmpty()) {
+                primary.loginName = snapshot.loginName;
+                primary.passwordEnc = snapshot.passwordEnc;
+                try {
+                    saveManifest(primary);
+                } catch (IOException ignored) {
+                    // Cosmetic; the merge below still has to happen.
+                }
+            }
+            primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
             if (moveToHistory(historyDir, primary, snapshot)) {
                 delete(snapshot);
             }
@@ -663,6 +680,32 @@ final class SnapshotStore {
         saveManifest(snapshot);
     }
 
+    /** Stores the card's account name and password; the password is Keystore-encrypted. */
+    void setCredentials(Snapshot snapshot, String loginName, String password) throws IOException {
+        snapshot.loginName = loginName == null ? "" : loginName.trim();
+        if (password == null || password.isEmpty()) {
+            snapshot.passwordEnc = "";
+        } else {
+            snapshot.passwordEnc = Base64.encodeToString(
+                    SnapshotCrypto.encrypt(password.getBytes(StandardCharsets.UTF_8)),
+                    Base64.NO_WRAP);
+        }
+        saveManifest(snapshot);
+    }
+
+    /** Decrypts the stored password; empty when none was saved. */
+    String password(Snapshot snapshot) throws IOException {
+        if (snapshot.passwordEnc.isEmpty()) {
+            return "";
+        }
+        try {
+            byte[] raw = Base64.decode(snapshot.passwordEnc, Base64.NO_WRAP);
+            return new String(SnapshotCrypto.decrypt(raw), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException error) {
+            throw new IOException("密码数据已损坏", error);
+        }
+    }
+
     void delete(Snapshot snapshot) {
         deleteRecursively(snapshot.dir);
         File history = new File(snapshot.dir.getParentFile(), HISTORY);
@@ -693,6 +736,9 @@ final class SnapshotStore {
             Snapshot restored = readManifest(snapshot.game, snapshot.dir);
             restored.id = snapshot.id;
             restored.name = currentName;
+            restored.lastUsedAt = snapshot.lastUsedAt;
+            restored.loginName = snapshot.loginName;
+            restored.passwordEnc = snapshot.passwordEnc;
             saveManifest(restored);
             snapshot.name = currentName;
             snapshot.createdAt = restored.createdAt;
@@ -819,6 +865,12 @@ final class SnapshotStore {
                 }
             }
             progress.report("切换完成，所有文件校验一致");
+            target.lastUsedAt = System.currentTimeMillis();
+            try {
+                saveManifest(target);
+            } catch (IOException ignored) {
+                // The switch already succeeded; a stale timestamp is cosmetic.
+            }
             pruneNamed(game, "切换前自动备份", 3);
             if (launchAfterwards) {
                 game.launch();
@@ -959,6 +1011,15 @@ final class SnapshotStore {
             root.put("createdAt", snapshot.createdAt);
             root.put("package", snapshot.game.pkg);
             root.put("encrypted", true);
+            if (!snapshot.loginName.isEmpty()) {
+                root.put("loginName", snapshot.loginName);
+            }
+            if (!snapshot.passwordEnc.isEmpty()) {
+                root.put("passwordEnc", snapshot.passwordEnc);
+            }
+            if (snapshot.lastUsedAt > 0) {
+                root.put("lastUsedAt", snapshot.lastUsedAt);
+            }
             JSONArray files = new JSONArray();
             for (Entry entry : snapshot.entries.values()) {
                 JSONObject item = new JSONObject();
@@ -998,6 +1059,9 @@ final class SnapshotStore {
         }
         snapshot.name = root.optString("name", snapshot.id);
         snapshot.createdAt = root.optLong("createdAt", dir.lastModified());
+        snapshot.lastUsedAt = root.optLong("lastUsedAt", 0);
+        snapshot.loginName = root.optString("loginName", "");
+        snapshot.passwordEnc = root.optString("passwordEnc", "");
         JSONArray files = root.getJSONArray("files");
         for (int index = 0; index < files.length(); index++) {
             JSONObject item = files.getJSONObject(index);

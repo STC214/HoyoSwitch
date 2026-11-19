@@ -3,6 +3,9 @@ package dev.hoyoswitch.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -740,6 +743,15 @@ public final class MainActivity extends Activity {
             restoreScroll(scroll, savedScrollY);
             return;
         }
+        if (snapshots.size() >= 45) {
+            TextView warning = new TextView(this);
+            warning.setText("已保存 " + snapshots.size()
+                    + " 个账号，接近游戏 SDK 上限（50）：登录新账号时游戏可能删掉最久未使用的账号。");
+            warning.setTextSize(12);
+            warning.setTextColor(getColor(R.color.danger));
+            warning.setPadding(0, dp(4), 0, dp(10));
+            cardList.addView(warning, matchWrap());
+        }
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             LinearLayout card = new LinearLayout(this);
@@ -776,11 +788,14 @@ public final class MainActivity extends Activity {
             }
             meta.setText(format.format(new Date(snapshot.createdAt)) + " · "
                     + present + "/" + snapshot.entries.size() + " 个状态文件存在"
+                    + (snapshot.lastUsedAt > 0 ? " · 上次使用 "
+                    + format.format(new Date(snapshot.lastUsedAt)) : "")
                     + (readable ? "" : " · 无法解密（密钥已失效）"));
             meta.setTextSize(12);
             meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
             meta.setPadding(0, dp(4), 0, dp(14));
             card.addView(meta, matchWrap());
+            card.addView(credentialsBlock(snapshot), withBottomMargin(matchWrap(), dp(12)));
 
             Button switchButton = pill("切换到此账号", true);
             switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
@@ -1023,6 +1038,139 @@ public final class MainActivity extends Activity {
         text.addView(subtitleView, matchWrap());
         row.addView(text, weightWrap());
         return row;
+    }
+
+    /** Account name + password block; each value copies on its own. */
+    private View credentialsBlock(SnapshotStore.Snapshot snapshot) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        panel.setPadding(dp(14), dp(10), dp(8), dp(10));
+
+        boolean hasAccount = !snapshot.loginName.isEmpty();
+        boolean hasPassword = !snapshot.passwordEnc.isEmpty();
+        panel.addView(credentialRow("账号", hasAccount ? snapshot.loginName : "未设置",
+                hasAccount ? snapshot.loginName : null, snapshot), matchWrap());
+        panel.addView(credentialRow("密码", hasPassword ? "••••••••" : "未设置",
+                hasPassword ? "password" : null, snapshot), withTopMargin(matchWrap(), dp(4)));
+
+        TextView edit = new TextView(this);
+        edit.setText("编辑账号密码");
+        edit.setTextSize(12);
+        edit.setTextColor(getColor(R.color.accent));
+        edit.setPadding(0, dp(8), 0, 0);
+        edit.setOnClickListener(view -> showCredentialsDialog(snapshot));
+        panel.addView(edit, matchWrap());
+        return panel;
+    }
+
+    private View credentialRow(String label, String value, String copyValue,
+                               SnapshotStore.Snapshot snapshot) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView text = new TextView(this);
+        text.setText(label + "：" + value);
+        text.setTextSize(13);
+        text.setTextColor(getColor(copyValue == null ? R.color.text_muted : R.color.text_primary));
+        text.setMaxLines(1);
+        text.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        row.addView(text, weightWrap());
+
+        Button copy = smallPill("复制");
+        copy.setEnabled(copyValue != null);
+        copy.setAlpha(copyValue != null ? 1f : 0.45f);
+        copy.setContentDescription("复制" + label);
+        copy.setOnClickListener(view -> {
+            String actual = copyValue;
+            if ("password".equals(actual)) {
+                try {
+                    actual = store.password(snapshot);
+                } catch (IOException error) {
+                    toast("密码读取失败：" + error.getMessage());
+                    return;
+                }
+            }
+            if (actual == null || actual.isEmpty()) {
+                toast("还没有设置" + label);
+                return;
+            }
+            copyToClipboard(label, actual);
+        });
+        row.addView(copy, new LinearLayout.LayoutParams(dp(64), dp(34)));
+        return row;
+    }
+
+    private Button smallPill(String text) {
+        Button button = pill(text, false);
+        button.setTextSize(12);
+        button.setMinHeight(dp(34));
+        button.setPadding(dp(8), 0, dp(8), 0);
+        return button;
+    }
+
+    private void copyToClipboard(String label, String value) {
+        ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (manager == null) {
+            toast("系统剪贴板不可用");
+            return;
+        }
+        manager.setPrimaryClip(ClipData.newPlainText(label, value));
+        toast("已复制" + label);
+    }
+
+    private void showCredentialsDialog(SnapshotStore.Snapshot snapshot) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("账号密码 · " + snapshot.name),
+                withBottomMargin(matchWrap(), dp(12)));
+
+        EditText account = new EditText(this);
+        account.setHint("账号（手机号 / 邮箱 / 用户名）");
+        account.setText(snapshot.loginName);
+        account.setSingleLine(true);
+        styleInput(account);
+        card.addView(account, withBottomMargin(matchWrap(), dp(10)));
+
+        EditText password = new EditText(this);
+        password.setHint("密码（加密保存）");
+        password.setSingleLine(true);
+        password.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        styleInput(password);
+        try {
+            password.setText(store.password(snapshot));
+        } catch (IOException error) {
+            toast("密码读取失败：" + error.getMessage());
+        }
+        card.addView(password, withBottomMargin(matchWrap(), dp(14)));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        Button save = pill("保存", true);
+        save.setOnClickListener(view -> {
+            dialog.dismiss();
+            runOp("保存账号密码", () -> {
+                store.setCredentials(snapshot, account.getText().toString(),
+                        password.getText().toString());
+                appendLog("已保存账号密码：" + snapshot.name);
+            });
+        });
+        row.addView(cancel, weightWrap(1f, dp(4)));
+        row.addView(save, weightWrap(1f, dp(4)));
+        card.addView(row, matchWrap());
+        showDialog(dialog, card);
+    }
+
+    private void styleInput(EditText input) {
+        input.setTextSize(14);
+        input.setTextColor(getColor(R.color.text_primary));
+        input.setHintTextColor(getColor(R.color.text_muted));
+        input.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        input.setPadding(dp(14), dp(10), dp(14), dp(10));
     }
 
     private void showCardMenu(SnapshotStore.Snapshot snapshot) {
