@@ -6,6 +6,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
@@ -102,10 +103,17 @@ public final class MainActivity extends Activity {
 
         logView = new TextView(this);
         logView.setTextSize(12);
-        logView.setPadding(0, pad / 2, 0, 0);
-        root.addView(logView, matchWrap());
+        ScrollView logScroll = new ScrollView(this);
+        logScroll.addView(logView);
+        logScroll.setPadding(0, pad / 2, 0, 0);
+        int logHeight = (int) (90 * getResources().getDisplayMetrics().density);
+        root.addView(logScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, logHeight));
+        logScrollRef = logScroll;
         return root;
     }
+
+    private ScrollView logScrollRef;
 
     private static LinearLayout.LayoutParams matchWrap() {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -243,6 +251,9 @@ public final class MainActivity extends Activity {
                 logView.setText(line);
             } else {
                 logView.setText(text + "\n" + line);
+            }
+            if (logScrollRef != null) {
+                logScrollRef.post(() -> logScrollRef.fullScroll(View.FOCUS_DOWN));
             }
         });
     }
