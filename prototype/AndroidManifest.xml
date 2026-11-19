@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.hoyoswitch.fixture" android:versionCode="2" android:versionName="0.2">
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="36" />
+    <application android:label="账户切换测试" android:icon="@drawable/app_icon"
+        android:debuggable="true" android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".SwitchActivity" android:exported="false" android:process=":switcher" />
+    </application>
+</manifest>
