@@ -101,7 +101,7 @@ public final class FloatingService extends Service {
 
     private Notification buildNotification() {
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle("账号切换 · " + game.label)
+                .setContentTitle("米游账号切换 · " + game.label)
                 .setContentText("悬浮按钮已开启：切换后点它更新快照")
                 .setSmallIcon(android.R.drawable.ic_menu_save)
                 .setOngoing(true)

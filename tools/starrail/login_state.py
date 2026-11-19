@@ -23,6 +23,7 @@ from device import DATA_DIR, Device, digest
 
 PORTE_PREFS = f'{DATA_DIR}/shared_prefs/porte_sdk_account_PRODUCT.xml'
 SDK_PREFS = f'{DATA_DIR}/shared_prefs/mihoyo_sdk_preference.xml'
+PACKAGE = 'com.miHoYo.hkrpg'
 ROOT = Path(__file__).resolve().parents[2]
 BACKUPS = ROOT / 'account-snapshots' / 'login-state'
 
@@ -128,12 +129,20 @@ def apply_change(device, path, data, before_value, after_value):
     meta = backup(record, path, original, before_value, after_value, device)
     print(f'backup={record}')
     print(f'sha256_before={meta["sha256_before"]}')
-    problems = write_checked(device, path, data, after_value)
+    try:
+        problems = write_checked(device, path, data, after_value)
+    except Exception as error:  # noqa: BLE001 - any failure must still roll back
+        print(f'write verification raised: {error}', file=sys.stderr)
+        problems = [f'write verification raised: {error}']
     if problems:
         print('verification failed; restoring backup', file=sys.stderr)
-        restore_problems = write_checked(device, path, original, before_value)
         for line in problems:
             print(f'  - {line}', file=sys.stderr)
+        try:
+            restore_problems = write_checked(device, path, original, before_value)
+        except Exception as error:  # noqa: BLE001 - report instead of crashing silently
+            print(f'restore raised: {error}', file=sys.stderr)
+            return 1
         if restore_problems:
             for line in restore_problems:
                 print(f'  restore: {line}', file=sys.stderr)

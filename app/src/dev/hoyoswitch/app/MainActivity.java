@@ -8,6 +8,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.BitmapFactory;
@@ -98,10 +99,12 @@ public final class MainActivity extends Activity {
             }
         }
         renderTabs();
-        String selftest = getIntent().getStringExtra("selftest");
+        // Destructive self tests are only honoured by debug builds; a release APK ignores them.
+        boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        String selftest = debuggable ? getIntent().getStringExtra("selftest") : null;
         if ("cardops".equals(selftest)) {
             main.postDelayed(this::runCardOpsTest, 1200);
-        } else if (getIntent().getBooleanExtra("selftest", false)) {
+        } else if (debuggable && getIntent().getBooleanExtra("selftest", false)) {
             main.postDelayed(this::runSelfTest, 1500);
         }
     }
@@ -382,7 +385,7 @@ public final class MainActivity extends Activity {
         headerText.setOrientation(LinearLayout.VERTICAL);
         headerText.setPadding(dp(14), 0, 0, 0);
         TextView appName = new TextView(this);
-        appName.setText("账号切换");
+        appName.setText("米游账号切换");
         appName.setTextSize(22);
         appName.setTypeface(null, Typeface.BOLD);
         appName.setTextColor(getColor(R.color.text_primary));

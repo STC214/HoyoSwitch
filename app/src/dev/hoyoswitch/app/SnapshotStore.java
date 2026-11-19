@@ -80,6 +80,9 @@ final class SnapshotStore {
     private static final int HISTORY_KEEP = 3;
     private static final int VERSION = 2;
 
+    /** Process-wide lock: Activity, floating service and background threads share snapshots. */
+    static final Object LOCK = new Object();
+
     /** Self-test hook: fail verification after this many successful writes; -1 disables it. */
     static volatile int failAfterWrites = -1;
 
@@ -147,6 +150,12 @@ final class SnapshotStore {
     }
 
     String capture(GameProfile game, String name) throws IOException {
+        synchronized (LOCK) {
+            return captureLocked(game, name);
+        }
+    }
+
+    private String captureLocked(GameProfile game, String name) throws IOException {
         if (!game.supported) {
             throw new IOException(game.label + " 尚未适配，不能拍摄快照");
         }
@@ -222,10 +231,16 @@ final class SnapshotStore {
         Entry entry = new Entry();
         entry.path = relative;
         String path = game.path(relative);
-        RootShell.Result content = RootShell.run("cat " + quote(path));
-        if (content.code != 0) {
+        RootShell.Result content = RootShell.run(
+                "if [ -e " + quote(path) + " ]; then cat " + quote(path) + "; else exit 3; fi");
+        if (content.code == 3) {
             entry.present = false;
             return entry;
+        }
+        if (content.code != 0) {
+            // Missing files are handled above; any other failure means the capture is unusable.
+            throw new IOException("读取失败(" + content.code + "): " + relative
+                    + (content.err.isEmpty() ? "" : " -> " + content.err));
         }
         byte[] bytes = stable ? stableRead(path, content.out) : content.out;
         entry.present = true;
@@ -264,9 +279,14 @@ final class SnapshotStore {
                 Thread.currentThread().interrupt();
                 break;
             }
-            RootShell.Result again = RootShell.run("cat " + quote(path));
-            if (again.code != 0) {
+            RootShell.Result again = RootShell.run(
+                    "if [ -e " + quote(path) + " ]; then cat " + quote(path)
+                            + "; else exit 3; fi");
+            if (again.code == 3) {
                 break;
+            }
+            if (again.code != 0) {
+                throw new IOException("读取失败(" + again.code + "): " + path);
             }
             if (Arrays.equals(candidate, again.out)) {
                 return candidate;
@@ -277,7 +297,13 @@ final class SnapshotStore {
         return candidate;
     }
 
-    synchronized List<Snapshot> list(GameProfile game) {
+    List<Snapshot> list(GameProfile game) {
+        synchronized (LOCK) {
+            return listLocked(game);
+        }
+    }
+
+    private List<Snapshot> listLocked(GameProfile game) {
         List<Snapshot> snapshots = new ArrayList<>();
         File[] children = dirFor(game).listFiles();
         if (children == null) {
@@ -456,15 +482,24 @@ final class SnapshotStore {
      * version is archived first so an update is never a one-way change.
      */
     String updateSnapshot(Snapshot target) throws IOException {
-        String tempId = capture(target.game, target.name);
+        synchronized (LOCK) {
+            return updateSnapshotLocked(target);
+        }
+    }
+
+    private String updateSnapshotLocked(Snapshot target) throws IOException {
+        String tempId = captureLocked(target.game, target.name);
         File temp = new File(dirFor(target.game), tempId);
         File archived = archive(target.dir);
+        if (archived == null) {
+            // Never delete the current snapshot unless a history copy really exists.
+            deleteRecursively(temp);
+            throw new IOException("无法归档旧快照，已中止更新: " + target.id);
+        }
         deleteRecursively(target.dir);
         if (!temp.renameTo(target.dir)) {
-            if (archived != null) {
-                //noinspection ResultOfMethodCallIgnored
-                archived.renameTo(target.dir);
-            }
+            //noinspection ResultOfMethodCallIgnored
+            archived.renameTo(target.dir);
             deleteRecursively(temp);
             throw new IOException("无法替换旧快照目录: " + target.id);
         }
@@ -476,6 +511,11 @@ final class SnapshotStore {
             refreshed.loginName = target.loginName;
             refreshed.passwordEnc = target.passwordEnc;
             saveManifest(refreshed);
+            // Keep the caller's object in sync; a later rename() must write the new hashes.
+            target.entries.clear();
+            target.entries.putAll(refreshed.entries);
+            target.createdAt = refreshed.createdAt;
+            target.lastUsedAt = refreshed.lastUsedAt;
         } catch (JSONException error) {
             throw new IOException("更新后的快照清单损坏", error);
         }
@@ -520,7 +560,13 @@ final class SnapshotStore {
      * captures), trims snapshots created by the self tests, and collapses snapshots of the same
      * account into a single card.
      */
-    synchronized void cleanup(GameProfile game) {
+    void cleanup(GameProfile game) {
+        synchronized (LOCK) {
+            cleanupLocked(game);
+        }
+    }
+
+    private void cleanupLocked(GameProfile game) {
         File base = dirFor(game);
         File[] children = base.listFiles();
         long cutoff = System.currentTimeMillis() - 3 * 60 * 1000L;
@@ -682,6 +728,12 @@ final class SnapshotStore {
     }
 
     void rename(Snapshot snapshot, String name) throws IOException {
+        synchronized (LOCK) {
+            renameLocked(snapshot, name);
+        }
+    }
+
+    private void renameLocked(Snapshot snapshot, String name) throws IOException {
         snapshot.name = name.trim();
         if (snapshot.name.isEmpty()) {
             throw new IOException("名称不能为空");
@@ -691,6 +743,13 @@ final class SnapshotStore {
 
     /** Stores the card's account name and password; the password is Keystore-encrypted. */
     void setCredentials(Snapshot snapshot, String loginName, String password) throws IOException {
+        synchronized (LOCK) {
+            setCredentialsLocked(snapshot, loginName, password);
+        }
+    }
+
+    private void setCredentialsLocked(Snapshot snapshot, String loginName, String password)
+            throws IOException {
         snapshot.loginName = loginName == null ? "" : loginName.trim();
         if (password == null || password.isEmpty()) {
             snapshot.passwordEnc = "";
@@ -716,6 +775,12 @@ final class SnapshotStore {
     }
 
     void delete(Snapshot snapshot) {
+        synchronized (LOCK) {
+            deleteLocked(snapshot);
+        }
+    }
+
+    private void deleteLocked(Snapshot snapshot) {
         deleteRecursively(snapshot.dir);
         File history = new File(snapshot.dir.getParentFile(), HISTORY);
         File[] versions = history.listFiles();
@@ -789,15 +854,17 @@ final class SnapshotStore {
      * the account has no card yet. Keeps one card per account with a stable id.
      */
     String captureAccount(GameProfile game, String name) throws IOException {
-        Snapshot existing = currentAccount(game);
-        if (existing == null) {
-            return capture(game, name);
+        synchronized (LOCK) {
+            Snapshot existing = currentAccount(game);
+            if (existing == null) {
+                return captureLocked(game, name);
+            }
+            updateSnapshotLocked(existing);
+            if (name != null && !name.trim().isEmpty()) {
+                renameLocked(existing, name);
+            }
+            return existing.id;
         }
-        updateSnapshot(existing);
-        if (name != null && !name.trim().isEmpty()) {
-            rename(existing, name);
-        }
-        return existing.id;
     }
 
     /** True when the payloads can actually be decrypted with the current Keystore key. */
@@ -831,6 +898,13 @@ final class SnapshotStore {
 
     /** Restores the switch files of {@code target}, with safety snapshot and rollback. */
     void switchTo(Snapshot target, boolean launchAfterwards, Progress progress) throws IOException {
+        synchronized (LOCK) {
+            switchToLocked(target, launchAfterwards, progress);
+        }
+    }
+
+    private void switchToLocked(Snapshot target, boolean launchAfterwards, Progress progress)
+            throws IOException {
         GameProfile game = target.game;
         if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再切换");
@@ -900,16 +974,27 @@ final class SnapshotStore {
 
     /** Restores every present file of {@code snapshot}; used by rollback. */
     void restoreAll(Snapshot snapshot, Progress progress) throws IOException {
+        synchronized (LOCK) {
+            restoreAllLocked(snapshot, progress);
+        }
+    }
+
+    private void restoreAllLocked(Snapshot snapshot, Progress progress) throws IOException {
         GameProfile game = snapshot.game;
         if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再恢复");
         }
         for (Map.Entry<String, Entry> item : snapshot.entries.entrySet()) {
             Entry entry = item.getValue();
+            String path = game.path(entry.path);
             if (!entry.present) {
+                // Restore the captured state exactly: a file created after the snapshot must go.
+                if (RootShell.run("test -e " + quote(path)).code == 0) {
+                    RootShell.run("rm -f " + quote(path));
+                    progress.report("已移除多余文件: " + entry.path);
+                }
                 continue;
             }
-            String path = game.path(entry.path);
             byte[] current = readDevice(path);
             if (current != null && sha256(current).equals(entry.sha256)) {
                 continue;

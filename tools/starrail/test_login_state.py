@@ -4,7 +4,9 @@ Run from the repository root:  python -m unittest discover -s tools/starrail -p 
 """
 
 import unittest
+from unittest import mock
 
+import login_state
 from login_state import login_status, with_value
 
 BASIC = (
@@ -62,6 +64,30 @@ class RewriteTest(unittest.TestCase):
     def test_unknown_value_is_rejected_elsewhere(self):
         with self.assertRaises(ValueError):
             login_status(BASIC.replace(b'value="true"', b'value="yes"'))
+
+
+class SafetyTest(unittest.TestCase):
+    def test_running_game_is_refused_without_name_error(self):
+        device = mock.Mock()
+        device.game_pids.return_value = [1234]
+        self.assertEqual(login_state.command_set(device, 'true', False), 1)
+
+    def test_exception_during_verification_still_restores_backup(self):
+        device = mock.Mock()
+        device.read.return_value = BASIC
+        writes = []
+
+        def flaky_write_checked(_device, _path, data, expected):
+            writes.append((data, expected))
+            if len(writes) == 1:
+                raise RuntimeError('parse failed')
+            return []
+
+        with mock.patch('login_state.backup', return_value={'sha256_before': 'x'}), \
+                mock.patch('login_state.write_checked', side_effect=flaky_write_checked):
+            code = login_state.apply_change(device, '/data/prefs.xml', b'new', 'true', 'false')
+        self.assertEqual(code, 1)
+        self.assertEqual(writes, [(b'new', 'false'), (BASIC, 'true')])
 
 
 if __name__ == '__main__':

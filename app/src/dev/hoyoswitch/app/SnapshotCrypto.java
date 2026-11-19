@@ -22,6 +22,8 @@ final class SnapshotCrypto {
     private static final int IV_BYTES = 12;
     private static final int TAG_BITS = 128;
     private static final byte[] MAGIC = {'H', 'S', 'N', '1'};
+    private static final Object KEY_LOCK = new Object();
+    private static volatile SecretKey cachedKey;
 
     private SnapshotCrypto() {
     }
@@ -70,28 +72,35 @@ final class SnapshotCrypto {
     }
 
     private static SecretKey key() throws GeneralSecurityException, IOException {
-        KeyStore store = KeyStore.getInstance("AndroidKeyStore");
-        store.load(null);
-        SecretKey existing;
-        try {
-            existing = (SecretKey) store.getKey(ALIAS, null);
-        } catch (UnrecoverableKeyException error) {
-            // Do not regenerate: that would silently make every stored snapshot unreadable.
-            throw new IOException("快照密钥不可用（可能已被系统失效），无法读取已有快照", error);
+        synchronized (KEY_LOCK) {
+            if (cachedKey != null) {
+                return cachedKey;
+            }
+            KeyStore store = KeyStore.getInstance("AndroidKeyStore");
+            store.load(null);
+            SecretKey existing;
+            try {
+                existing = (SecretKey) store.getKey(ALIAS, null);
+            } catch (UnrecoverableKeyException error) {
+                // Do not regenerate: that would silently make every stored snapshot unreadable.
+                throw new IOException("快照密钥不可用（可能已被系统失效），无法读取已有快照", error);
+            }
+            if (existing != null) {
+                cachedKey = existing;
+                return existing;
+            }
+            KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,
+                    "AndroidKeyStore");
+            generator.init(new KeyGenParameterSpec.Builder(ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .setRandomizedEncryptionRequired(true)
+                    .build());
+            generator.generateKey();
+            cachedKey = (SecretKey) store.getKey(ALIAS, null);
+            return cachedKey;
         }
-        if (existing != null) {
-            return existing;
-        }
-        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,
-                "AndroidKeyStore");
-        generator.init(new KeyGenParameterSpec.Builder(ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .setRandomizedEncryptionRequired(true)
-                .build());
-        generator.generateKey();
-        return (SecretKey) store.getKey(ALIAS, null);
     }
 }

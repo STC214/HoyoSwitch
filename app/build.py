@@ -81,7 +81,16 @@ def main():
     generated.mkdir(parents=True)
 
     run(TOOLS / 'aapt2.exe', 'compile', '--no-crunch', '--dir', res, '-o', flat)
-    run(TOOLS / 'aapt2.exe', 'link', '-I', ANDROID, '--manifest', HERE / 'AndroidManifest.xml',
+    manifest = HERE / 'AndroidManifest.xml'
+    if release:
+        # The source manifest stays debuggable for local testing; release builds must not be.
+        text = manifest.read_text(encoding='utf-8')
+        if 'android:debuggable="true"' not in text:
+            raise SystemExit('expected android:debuggable="true" in AndroidManifest.xml')
+        manifest = OUTPUT / 'AndroidManifest.release.xml'
+        manifest.write_text(text.replace('android:debuggable="true"',
+                                         'android:debuggable="false"'), encoding='utf-8')
+    run(TOOLS / 'aapt2.exe', 'link', '-I', ANDROID, '--manifest', manifest,
         '--java', generated, '-o', unsigned, flat)
 
     sources = sorted(str(path) for path in SRC.rglob('*.java'))
