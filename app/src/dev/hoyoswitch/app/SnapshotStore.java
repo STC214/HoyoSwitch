@@ -1,6 +1,7 @@
 package dev.hoyoswitch.app;
 
 import android.content.Context;
+import android.util.Log;
 import android.util.Xml;
 
 import org.json.JSONArray;
@@ -281,17 +282,21 @@ final class SnapshotStore {
 
     /** Account id stored in a snapshot's widget cache; empty when unreadable. */
     String accountMid(Snapshot snapshot) {
+        try {
+            return readAccountMid(snapshot);
+        } catch (IOException error) {
+            return "";
+        }
+    }
+
+    private String readAccountMid(Snapshot snapshot) throws IOException {
         for (String relative : snapshot.game.files) {
             if (!relative.endsWith("combo_widget.xml")) {
                 continue;
             }
-            try {
-                byte[] widget = readSnapshot(snapshot, relative);
-                String account = preferenceValue(widget, "string", "account");
-                return account == null ? "" : accountField(account, "mid");
-            } catch (IOException error) {
-                return "";
-            }
+            byte[] widget = readSnapshot(snapshot, relative);
+            String account = preferenceValue(widget, "string", "account");
+            return account == null ? "" : accountField(account, "mid");
         }
         return "";
     }
@@ -366,12 +371,13 @@ final class SnapshotStore {
 
     /**
      * Housekeeping: removes abandoned directories that never got a manifest (interrupted
-     * captures) and trims snapshots created by the self tests.
+     * captures), trims snapshots created by the self tests, and collapses snapshots of the same
+     * account into a single card.
      */
     void cleanup(GameProfile game) {
         File base = dirFor(game);
         File[] children = base.listFiles();
-        long cutoff = System.currentTimeMillis() - 10 * 60 * 1000L;
+        long cutoff = System.currentTimeMillis() - 3 * 60 * 1000L;
         if (children != null) {
             for (File child : children) {
                 if (!child.isDirectory() || HISTORY.equals(child.getName())) {
@@ -382,8 +388,101 @@ final class SnapshotStore {
                 }
             }
         }
+        dedupeAccounts(game);
         pruneNamed(game, "回滚自检基线", 1);
         pruneNamed(game, "切换前自动备份", 2);
+    }
+
+    /**
+     * One card per account: keeps the newest snapshot of each account id and folds older ones into
+     * its history, so nothing is lost while the list stops growing duplicates.
+     */
+    void dedupeAccounts(GameProfile game) {
+        List<Snapshot> snapshots = list(game);
+        Map<String, Snapshot> keepByAccount = new LinkedHashMap<>();
+        File historyDir = new File(dirFor(game), HISTORY);
+        for (Snapshot snapshot : snapshots) {
+            String mid;
+            try {
+                mid = readAccountMid(snapshot);
+            } catch (IOException error) {
+                String message = error.getMessage() == null ? "" : error.getMessage();
+                long age = System.currentTimeMillis() - snapshot.createdAt;
+                if (message.contains("解密") && age > 10 * 60 * 1000L) {
+                    // Payloads encrypted with a key that no longer exists can never be restored.
+                    Log.i("hoyoswitch", "drop unreadable snapshot " + snapshot.id);
+                    delete(snapshot);
+                }
+                continue;
+            }
+            if (mid.isEmpty()) {
+                continue;
+            }
+            Snapshot primary = keepByAccount.get(mid);
+            if (primary == null) {
+                keepByAccount.put(mid, snapshot);
+                continue;
+            }
+            if (isSessionName(primary.name)) {
+                // Safety captures must not become the card's permanent name.
+                renameSafely(primary, isSessionName(snapshot.name) ? primary.id : snapshot.name);
+            }
+            if (moveToHistory(historyDir, primary, snapshot)) {
+                delete(snapshot);
+            }
+        }
+        for (Snapshot primary : keepByAccount.values()) {
+            if (isSessionName(primary.name)) {
+                renameSafely(primary, primary.id);
+            }
+        }
+    }
+
+    private void renameSafely(Snapshot snapshot, String name) {
+        try {
+            rename(snapshot, name);
+        } catch (IOException ignored) {
+            // A stale name is cosmetic; the merge below still has to happen.
+        }
+    }
+
+    private static boolean isSessionName(String name) {
+        return name.equals("切换前自动备份") || name.equals("回滚自检基线");
+    }
+
+    private boolean moveToHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
+        if (!historyDir.isDirectory() && !historyDir.mkdirs()) {
+            return false;
+        }
+        File destination = new File(historyDir, primary.id + "-" + duplicate.createdAt);
+        if (destination.exists()) {
+            destination = new File(historyDir, primary.id + "-" + System.currentTimeMillis());
+        }
+        if (!duplicate.dir.renameTo(destination)) {
+            return false;
+        }
+        pruneHistory(historyDir, primary.id);
+        return true;
+    }
+
+    private void pruneHistory(File historyDir, String id) {
+        File[] versions = historyDir.listFiles();
+        if (versions == null) {
+            return;
+        }
+        List<File> mine = new ArrayList<>();
+        for (File version : versions) {
+            if (version.getName().startsWith(id + "-")) {
+                mine.add(version);
+            }
+        }
+        if (mine.size() <= HISTORY_KEEP) {
+            return;
+        }
+        mine.sort((left, right) -> Long.compare(right.lastModified(), left.lastModified()));
+        for (int index = HISTORY_KEEP; index < mine.size(); index++) {
+            deleteRecursively(mine.get(index));
+        }
     }
 
     static final class HistoryEntry {
@@ -456,14 +555,73 @@ final class SnapshotStore {
         }
     }
 
+    /**
+     * Saves the current device state before a switch. When the logged-in account already has a
+     * card, that card is refreshed in place (old content goes to history) so switching does not
+     * spawn a new card every time.
+     */
+    private String snapshotCurrentAccount(GameProfile game, Progress progress) throws IOException {
+        Current current = detectCurrent(game);
+        Snapshot existing = current.loggedIn && !current.mid.isEmpty()
+                ? findByAccount(game, current.mid) : null;
+        if (existing != null) {
+            updateSnapshot(existing);
+            progress.report("已更新当前账号快照: " + existing.name);
+            return existing.id;
+        }
+        String id = capture(game, "切换前自动备份");
+        progress.report("已保存切换前状态: " + id);
+        return id;
+    }
+
+    /** Snapshot of the account that is logged in right now, or null when unknown. */
+    Snapshot currentAccount(GameProfile game) throws IOException {
+        Current current = detectCurrent(game);
+        if (!current.loggedIn || current.mid.isEmpty()) {
+            return null;
+        }
+        return findByAccount(game, current.mid);
+    }
+
+    /**
+     * Captures the device state into the current account's existing card, creating one only when
+     * the account has no card yet. Keeps one card per account with a stable id.
+     */
+    String captureAccount(GameProfile game, String name) throws IOException {
+        Snapshot existing = currentAccount(game);
+        if (existing == null) {
+            return capture(game, name);
+        }
+        if (name != null && !name.trim().isEmpty()) {
+            rename(existing, name);
+        }
+        updateSnapshot(existing);
+        return existing.id;
+    }
+
+    private Snapshot findByAccount(GameProfile game, String mid) {
+        for (Snapshot snapshot : list(game)) {
+            if (mid.equals(accountMid(snapshot))) {
+                return snapshot;
+            }
+        }
+        return null;
+    }
+
     /** Restores the switch files of {@code target}, with safety snapshot and rollback. */
     void switchTo(Snapshot target, boolean launchAfterwards, Progress progress) throws IOException {
         GameProfile game = target.game;
         if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再切换");
         }
-        String safetyId = capture(game, "切换前自动备份");
-        progress.report("已保存切换前状态: " + safetyId);
+        String safetyId = snapshotCurrentAccount(game, progress);
+        if (safetyId.equals(target.id)) {
+            progress.report("当前已经是这个账号，无需切换");
+            if (launchAfterwards) {
+                game.launch();
+            }
+            return;
+        }
         try {
             for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);

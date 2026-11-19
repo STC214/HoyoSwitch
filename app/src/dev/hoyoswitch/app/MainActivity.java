@@ -162,8 +162,11 @@ public final class MainActivity extends Activity {
             if (target0.isRunning()) {
                 target0.forceStop();
             }
-            String baselineId = store.capture(target0, "回滚自检基线");
-            SnapshotStore.Snapshot baseline = store.load(target0, baselineId);
+            SnapshotStore.Snapshot baseline = store.currentAccount(target0);
+            if (baseline == null) {
+                baseline = store.load(target0, store.capture(target0, "回滚自检基线"));
+            }
+            String baselineId = baseline.id;
             String baselineMid = store.accountMid(baseline);
             SnapshotStore.Snapshot other = null;
             for (SnapshotStore.Snapshot snapshot : store.list(target0)) {
@@ -187,8 +190,9 @@ public final class MainActivity extends Activity {
                 SnapshotStore.failAfterWrites = -1;
             }
             boolean rolledBack = true;
+            SnapshotStore.Snapshot expected = store.load(target0, baselineId);
             for (String relative : target0.switchFiles) {
-                SnapshotStore.Entry entry = baseline.entry(relative);
+                SnapshotStore.Entry entry = expected.entry(relative);
                 if (entry == null || !entry.present) {
                     continue;
                 }
@@ -1117,7 +1121,7 @@ public final class MainActivity extends Activity {
         final GameProfile selected = game;
         String name = nameInput.getText().toString();
         runOp("拍摄快照", () -> {
-            String id = store.capture(selected, name);
+            String id = store.captureAccount(selected, name);
             appendLog("已保存快照 " + id);
             main.post(() -> nameInput.setText(""));
         });

@@ -76,13 +76,22 @@ final class RootShell {
             try {
                 Process process = new ProcessBuilder(candidate, "-c", "id").start();
                 process.getOutputStream().close();
-                byte[] out = drain(process.getInputStream());
-                drain(process.getErrorStream());
+                Collector stdout = new Collector(process.getInputStream());
+                Collector stderr = new Collector(process.getErrorStream());
+                Thread outThread = new Thread(stdout, "su-probe-out");
+                Thread errThread = new Thread(stderr, "su-probe-err");
+                outThread.setDaemon(true);
+                errThread.setDaemon(true);
+                outThread.start();
+                errThread.start();
                 if (!process.waitFor(10, TimeUnit.SECONDS)) {
                     process.destroyForcibly();
                     failures.append(candidate).append(":timeout ");
                     continue;
                 }
+                outThread.join(3000);
+                errThread.join(3000);
+                byte[] out = stdout.bytes();
                 int exit = process.exitValue();
                 if (exit == 0 && new String(out, StandardCharsets.UTF_8).contains("uid=0")) {
                     resolved = candidate;
@@ -113,6 +122,14 @@ final class RootShell {
 
     private static Result exec(String su, String command, byte[] input) throws IOException {
         Process process = new ProcessBuilder(su, "-c", command).start();
+        Collector stdout = new Collector(process.getInputStream());
+        Collector stderr = new Collector(process.getErrorStream());
+        Thread outThread = new Thread(stdout, "rootshell-out");
+        Thread errThread = new Thread(stderr, "rootshell-err");
+        outThread.setDaemon(true);
+        errThread.setDaemon(true);
+        outThread.start();
+        errThread.start();
         try {
             if (input != null) {
                 try (OutputStream stdin = process.getOutputStream()) {
@@ -124,16 +141,54 @@ final class RootShell {
             } else {
                 process.getOutputStream().close();
             }
-            byte[] stdout = drain(process.getInputStream());
-            String stderr = new String(drain(process.getErrorStream()), StandardCharsets.UTF_8).trim();
+            // Wait with a deadline first: draining before waitFor blocks forever when the child
+            // hangs, which used to leave operations stuck until the app was killed.
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 throw new IOException("root command timed out: " + command);
             }
-            return new Result(process.exitValue(), stdout, stderr);
+            outThread.join(5000);
+            errThread.join(5000);
+            return new Result(process.exitValue(), stdout.bytes(),
+                    stderr.text().trim());
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new IOException("root command interrupted", error);
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+            }
+        }
+    }
+
+    /** Reads a process stream on its own thread so a chatty child cannot block the caller. */
+    private static final class Collector implements Runnable {
+        private final InputStream stream;
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+
+        Collector(InputStream stream) {
+            this.stream = stream;
+        }
+
+        @Override
+        public void run() {
+            byte[] chunk = new byte[8192];
+            try (InputStream input = stream) {
+                int read;
+                while ((read = input.read(chunk)) > 0) {
+                    buffer.write(chunk, 0, read);
+                }
+            } catch (IOException ignored) {
+                // A killed child closes its pipes; keep whatever was read.
+            }
+        }
+
+        synchronized byte[] bytes() {
+            return buffer.toByteArray();
+        }
+
+        synchronized String text() {
+            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
         }
     }
 
@@ -153,17 +208,5 @@ final class RootShell {
             lastError = error.getMessage();
             return false;
         }
-    }
-
-    private static byte[] drain(InputStream stream) throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8192];
-        try (InputStream input = stream) {
-            int read;
-            while ((read = input.read(buffer)) > 0) {
-                output.write(buffer, 0, read);
-            }
-        }
-        return output.toByteArray();
     }
 }
