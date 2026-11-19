@@ -106,7 +106,7 @@ public final class MainActivity extends Activity {
         ScrollView logScroll = new ScrollView(this);
         logScroll.addView(logView);
         logScroll.setPadding(0, pad / 2, 0, 0);
-        int logHeight = (int) (90 * getResources().getDisplayMetrics().density);
+        int logHeight = (int) (60 * getResources().getDisplayMetrics().density);
         root.addView(logScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, logHeight));
         logScrollRef = logScroll;
@@ -130,6 +130,7 @@ public final class MainActivity extends Activity {
             boolean running;
             String version;
             List<SnapshotStore.Snapshot> snapshots;
+            SnapshotStore.Current current;
             try {
                 running = StarRailProfile.isRunning();
                 version = StarRailProfile.version();
@@ -138,22 +139,58 @@ public final class MainActivity extends Activity {
                 version = "";
             }
             snapshots = store.list();
+            try {
+                current = store.detectCurrent();
+            } catch (IOException error) {
+                current = null;
+            }
             final boolean rootedNow = rooted;
             final boolean runningNow = running;
             final String versionNow = version;
             final List<SnapshotStore.Snapshot> listed = snapshots;
+            final SnapshotStore.Current currentNow = current;
             main.post(() -> {
+                SnapshotStore.Snapshot matched = match(currentNow, listed);
                 String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
                 String gameText = versionNow.isEmpty() ? "未检测到星铁" : "星铁 " + versionNow;
                 statusView.setText(rootText + " · " + gameText + " · "
-                        + (runningNow ? "游戏运行中" : "游戏已停止"));
+                        + (runningNow ? "游戏运行中" : "游戏已停止")
+                        + " · 当前账号：" + describe(currentNow, matched));
                 captureButton.setEnabled(rootedNow && !runningNow && !busy);
-                renderCards(listed);
+                renderCards(listed, matched == null ? null : matched.id);
             });
         }).start();
     }
 
-    private void renderCards(List<SnapshotStore.Snapshot> snapshots) {
+    private SnapshotStore.Snapshot match(SnapshotStore.Current current,
+                                         List<SnapshotStore.Snapshot> snapshots) {
+        if (current == null || !current.loggedIn || current.mid.isEmpty()) {
+            return null;
+        }
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            if (current.mid.equals(store.accountMid(snapshot))) {
+                return snapshot;
+            }
+        }
+        return null;
+    }
+
+    private String describe(SnapshotStore.Current current, SnapshotStore.Snapshot matched) {
+        if (current == null) {
+            return "无法判定";
+        }
+        if (!current.loggedIn) {
+            return "未登录";
+        }
+        if (matched != null) {
+            return matched.name;
+        }
+        return current.mid.isEmpty()
+                ? (current.note.isEmpty() ? "已登录，无法识别" : current.note)
+                : "已登录，但不在任何快照中";
+    }
+
+    private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId) {
         cardList.removeAllViews();
         if (snapshots.isEmpty()) {
             TextView empty = new TextView(this);
@@ -169,7 +206,8 @@ public final class MainActivity extends Activity {
             card.setPadding(0, 20, 0, 20);
 
             TextView label = new TextView(this);
-            label.setText(snapshot.name);
+            boolean isCurrent = snapshot.id.equals(currentId);
+            label.setText(isCurrent ? snapshot.name + "　（当前登录）" : snapshot.name);
             label.setTextSize(16);
             card.addView(label, matchWrap());
 
@@ -198,18 +236,51 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void confirmSwitch(SnapshotStore.Snapshot snapshot) {
+    private void confirmSwitch(SnapshotStore.Snapshot target) {
+        if (busy) {
+            toast("上一个操作还没结束");
+            return;
+        }
+        busy = true;
+        appendLog("准备切换到 " + target.name);
+        new Thread(() -> {
+            try {
+                if (StarRailProfile.isRunning()) {
+                    StarRailProfile.forceStop();
+                    appendLog("已停止游戏");
+                }
+                SnapshotStore.Current current = store.detectCurrent();
+                List<SnapshotStore.Snapshot> snapshots = store.list();
+                String currentLabel = describe(current, match(current, snapshots));
+                main.post(() -> askSwitch(target, currentLabel));
+            } catch (Exception error) {
+                appendLog("失败：" + error.getMessage());
+                busy = false;
+                refresh();
+            }
+        }).start();
+    }
+
+    private void askSwitch(SnapshotStore.Snapshot target, String currentLabel) {
         new AlertDialog.Builder(this)
-                .setTitle("切换到 " + snapshot.name)
-                .setMessage("将停止游戏（如正在运行），写入账号相关文件，并自动保存切换前状态。继续？")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("切换", (dialog, which) -> runOp("切换到 " + snapshot.name, () -> {
-                    if (StarRailProfile.isRunning()) {
-                        StarRailProfile.forceStop();
-                        appendLog("已停止游戏");
+                .setTitle("切换账号")
+                .setMessage("当前账号：" + currentLabel
+                        + "\n目标账号：" + target.name
+                        + "\n\n将写入 4 个账号文件，并自动保存切换前状态。继续？")
+                .setNegativeButton("取消", (dialog, which) -> {
+                    busy = false;
+                    refresh();
+                })
+                .setPositiveButton("切换", (dialog, which) -> new Thread(() -> {
+                    try {
+                        store.switchTo(target, true, this::appendLog);
+                    } catch (Exception error) {
+                        appendLog("失败：" + error.getMessage());
+                    } finally {
+                        busy = false;
+                        refresh();
                     }
-                    store.switchTo(snapshot, true, this::appendLog);
-                }))
+                }).start())
                 .show();
     }
 

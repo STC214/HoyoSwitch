@@ -1,11 +1,15 @@
 package dev.hoyoswitch.app;
 
 import android.content.Context;
+import android.util.Xml;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.xmlpull.v1.XmlPullParser;
+import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -55,6 +59,13 @@ final class SnapshotStore {
     private static final String MANIFEST = "manifest.json";
     private static final int VERSION = 1;
 
+    /** What the device currently looks like, identified without displaying account ids. */
+    static final class Current {
+        boolean loggedIn;
+        String mid = "";
+        String note = "";
+    }
+
     private final File root;
 
     SnapshotStore(Context context) {
@@ -63,6 +74,73 @@ final class SnapshotStore {
 
     File fileOf(Snapshot snapshot, String relative) {
         return new File(new File(snapshot.dir, "files"), relative);
+    }
+
+    /**
+     * Identifies the account the client is currently on. Hashes cannot be used here: the client
+     * rewrites token, SDK prefs and the database timestamp on every launch. The account id is
+     * taken from the widget cache, which the account module refreshes after each login.
+     */
+    Current detectCurrent() throws IOException {
+        Current current = new Current();
+        byte[] prefs = readDevice(StarRailProfile.path("shared_prefs/porte_sdk_account_PRODUCT.xml"));
+        if (prefs == null) {
+            current.note = "读不到登录状态文件";
+            return current;
+        }
+        if (!"true".equals(preferenceValue(prefs, "boolean", "login_status"))) {
+            return current;
+        }
+        current.loggedIn = true;
+        byte[] widget = readDevice(StarRailProfile.path("shared_prefs/combo_widget.xml"));
+        String account = widget == null ? null : preferenceValue(widget, "string", "account");
+        if (account != null) {
+            current.mid = accountField(account, "mid");
+        }
+        if (current.mid.isEmpty()) {
+            current.note = "已登录，但读不到账号标识";
+        }
+        return current;
+    }
+
+    /** Account id stored in a snapshot's widget cache; empty when unreadable. */
+    String accountMid(Snapshot snapshot) {
+        try {
+            byte[] widget = readLocal(fileOf(snapshot, "shared_prefs/combo_widget.xml"));
+            String account = preferenceValue(widget, "string", "account");
+            return account == null ? "" : accountField(account, "mid");
+        } catch (IOException error) {
+            return "";
+        }
+    }
+
+    private static String preferenceValue(byte[] xml, String tag, String name) throws IOException {
+        try {
+            XmlPullParser parser = Xml.newPullParser();
+            parser.setInput(new ByteArrayInputStream(xml), "UTF-8");
+            int event;
+            while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
+                if (event == XmlPullParser.START_TAG && tag.equals(parser.getName())
+                        && name.equals(parser.getAttributeValue(null, "name"))) {
+                    if ("boolean".equals(tag)) {
+                        return parser.getAttributeValue(null, "value");
+                    }
+                    return parser.nextText();
+                }
+            }
+        } catch (XmlPullParserException error) {
+            throw new IOException("解析偏好文件失败", error);
+        }
+        return null;
+    }
+
+    private static String accountField(String json, String field) {
+        try {
+            String value = new JSONObject(json).optString(field, "");
+            return value == null ? "" : value;
+        } catch (JSONException error) {
+            return "";
+        }
     }
 
     String capture(String name) throws IOException {
