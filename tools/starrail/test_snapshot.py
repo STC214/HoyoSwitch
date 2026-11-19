@@ -76,5 +76,43 @@ class SelectTest(unittest.TestCase):
         self.assertFalse(chosen[0]['present'])
 
 
+class SidecarIssuesTest(unittest.TestCase):
+    def _device(self, present=()):
+        class FakeDevice:
+            def __init__(self, present):
+                self.present = set(present)
+
+            def info(self, path):
+                return None if path not in self.present else dict(
+                    uid='1', gid='1', mode='660', context='u:object_r:x:s0', size=0, mtime=0)
+
+            def read(self, path):
+                return b'x'
+
+        return FakeDevice(present)
+
+    def test_in_scope_sidecar_is_not_flagged(self):
+        manifest = {'files': [
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db', 'present': True, 'sha256': 'x'},
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db-journal', 'present': True, 'sha256': 'y'},
+        ]}
+        scope = {'databases/PORTE_ACCOUNT_PRODUCT.db',
+                 'databases/PORTE_ACCOUNT_PRODUCT.db-journal'}
+        # device has only the db; journal (in scope) must not block
+        device = self._device(present=('databases/PORTE_ACCOUNT_PRODUCT.db',))
+        self.assertEqual(snapshot.sidecar_issues(device, manifest, scope), [])
+
+    def test_out_of_scope_missing_sidecar_is_flagged(self):
+        manifest = {'files': [
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db', 'present': True, 'sha256': 'x'},
+            {'path': 'databases/PORTE_ACCOUNT_PRODUCT.db-journal', 'present': True, 'sha256': 'y'},
+        ]}
+        scope = {'databases/PORTE_ACCOUNT_PRODUCT.db'}
+        device = self._device(present=('databases/PORTE_ACCOUNT_PRODUCT.db',))
+        issues = snapshot.sidecar_issues(device, manifest, scope)
+        self.assertEqual(issues, ['databases/PORTE_ACCOUNT_PRODUCT.db-journal: '
+                                  'missing but snapshot expects it'])
+
+
 if __name__ == '__main__':
     unittest.main()

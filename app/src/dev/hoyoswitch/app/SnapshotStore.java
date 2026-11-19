@@ -365,8 +365,9 @@ final class SnapshotStore {
         for (String relative : relatives) {
             String path = game.path(relative);
             script.append("printf '\\n--HSN1DB--").append(relative).append("\\n'; ");
-            script.append("if [ -e ").append(quote(path)).append(" ]; then printf 'P'; cat ")
-                    .append(quote(path)).append(" || f=1; else printf 'A'; fi; ");
+            script.append("if [ -e ").append(quote(path)).append(" ]; then printf 'P'; stat -c %s ")
+                    .append(quote(path)).append("; printf '\\n'; cat ").append(quote(path))
+                    .append(" || f=1; else printf 'A'; fi; ");
         }
         script.append("exit $f");
         RootShell.Result result = RootShell.run(script.toString());
@@ -376,32 +377,50 @@ final class SnapshotStore {
         return new String(result.out, StandardCharsets.ISO_8859_1);
     }
 
+    /** Parses the length-prefixed framing; content bytes may contain anything, even markers. */
     private Map<String, byte[]> splitDbGroup(String data, List<String> relatives) {
         Map<String, byte[]> out = new LinkedHashMap<>();
-        for (int index = 0; index < relatives.size(); index++) {
-            String relative = relatives.get(index);
+        int cursor = 0;
+        for (String relative : relatives) {
             String marker = "\n--HSN1DB--" + relative + "\n";
-            int start = data.indexOf(marker);
+            int start = data.indexOf(marker, cursor);
             if (start < 0) {
                 out.put(relative, null);
                 continue;
             }
-            start += marker.length();
-            int end = data.length();
-            for (int other = index + 1; other < relatives.size(); other++) {
-                int candidate = data.indexOf("\n--HSN1DB--" + relatives.get(other) + "\n", start);
-                if (candidate >= 0 && candidate < end) {
-                    end = candidate;
-                }
-            }
-            String section = data.substring(start, end);
-            if (section.isEmpty()) {
+            int pos = start + marker.length();
+            if (pos >= data.length()) {
                 out.put(relative, null);
-            } else if (section.charAt(0) == 'A') {
-                out.put(relative, null); // absent
-            } else {
-                out.put(relative, section.substring(1).getBytes(StandardCharsets.ISO_8859_1));
+                continue;
             }
+            if (data.charAt(pos) == 'A') {
+                out.put(relative, null);
+                cursor = pos + 1;
+                continue;
+            }
+            // 'P' then decimal size then newline, then exactly that many bytes.
+            pos++;
+            int newline = data.indexOf('\n', pos);
+            if (newline < 0) {
+                out.put(relative, null);
+                break;
+            }
+            long size;
+            try {
+                size = Long.parseLong(data.substring(pos, newline).trim());
+            } catch (NumberFormatException error) {
+                out.put(relative, null);
+                break;
+            }
+            int contentStart = newline + 1;
+            int contentEnd = contentStart + (int) size;
+            if (contentEnd > data.length()) {
+                out.put(relative, null);
+                break;
+            }
+            out.put(relative, data.substring(contentStart, contentEnd)
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            cursor = contentEnd;
         }
         return out;
     }
@@ -647,9 +666,10 @@ final class SnapshotStore {
         } finally {
             deleteRecursively(dir);
         }
-        // queried == true means the table was genuinely empty (returned above); reaching here
-        // means SQLite could not read the file, which the caller treats as "undetermined".
-        return queried ? "" : null;
+        // queried == true means the table was genuinely empty (returned above). Otherwise SQLite
+        // could not read the file (Android's SQLite only supports UTF-8; these account DBs are
+        // UTF-16), so scan the raw bytes with encoding awareness as a best effort.
+        return queried ? "" : regexMid(db);
     }
 
     private static void writeIfPresent(File file, byte[] data) throws IOException {
@@ -659,7 +679,17 @@ final class SnapshotStore {
     }
 
     private static String regexMid(byte[] db) {
-        String text = new String(db, StandardCharsets.ISO_8859_1);
+        // SQLite stores TEXT in UTF-16 when the database header has a UTF-16 BOM; the account
+        // row's mid/type/timestamp then appear as UTF-16 code units. Decode accordingly so the
+        // ASCII regex still matches, and fall back to a byte-preserving decode otherwise.
+        String text;
+        if (db.length >= 2 && db[0] == (byte) 0xFF && db[1] == (byte) 0xFE) {
+            text = new String(db, StandardCharsets.UTF_16LE);
+        } else if (db.length >= 2 && db[0] == (byte) 0xFE && db[1] == (byte) 0xFF) {
+            text = new String(db, StandardCharsets.UTF_16BE);
+        } else {
+            text = new String(db, StandardCharsets.ISO_8859_1);
+        }
         Matcher matcher = ACCOUNT_ROW.matcher(text);
         String bestMid = "";
         long bestTimestamp = -1;
@@ -872,8 +902,11 @@ final class SnapshotStore {
             }
             primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
             if (moveToHistory(historyDir, primary, snapshot)) {
-                migrateHistory(historyDir, primary, snapshot);
-                delete(snapshot);
+                if (migrateHistory(historyDir, primary, snapshot)) {
+                    delete(snapshot);
+                } else {
+                    Log.w("hoyoswitch", "历史迁移未完成，保留 " + snapshot.id + " 的旧历史");
+                }
             }
         }
         for (Snapshot primary : keepByAccount.values()) {
@@ -910,12 +943,13 @@ final class SnapshotStore {
         return true;
     }
 
-    /** Moves the merged card's own history under the primary id so it is not deleted with it. */
-    private void migrateHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
+    /** Moves the merged card's own history under the primary id; false if any move failed. */
+    private boolean migrateHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
         File[] versions = historyDir.listFiles();
         if (versions == null) {
-            return;
+            return true;
         }
+        boolean allMoved = true;
         for (File version : versions) {
             if (!isHistoryOf(version.getName(), duplicate.id)) {
                 continue;
@@ -930,9 +964,11 @@ final class SnapshotStore {
                     target = new File(historyDir, primary.id + "-" + (++timestamp));
                 }
             }
-            //noinspection ResultOfMethodCallIgnored
-            version.renameTo(target);
+            if (!version.renameTo(target)) {
+                allMoved = false;
+            }
         }
+        return allMoved;
     }
 
     /** Database paths: the account db ends in .db, mihoyo_account has no extension. */

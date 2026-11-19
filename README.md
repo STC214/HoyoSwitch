@@ -2,7 +2,7 @@
 
 在 **已取得 Root 权限的安卓手机** 上运行的米哈游账号切换 App：为同一款游戏保存多个账号状态，需要时一键切换并重新登录。
 
-当前版本 **1.4.1**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
+当前版本 **1.4.2**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
 
 - 崩坏：星穹铁道 4.7.0
 - 原神 7.2.0
@@ -22,7 +22,7 @@
 
 ## 发布与安装
 
-GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.4.1>
+GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.4.2>
 
 本地构建（需要 Python、JDK、ADB、Android SDK 36 / Build Tools 36.0.0）：
 
@@ -41,7 +41,7 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 - [x] 原神：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 绝区零：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 账号卡、账号密码、加密存储、历史回滚、悬浮按钮、分栏记忆
-- [x] 正式签名、GitHub Release（1.0.0 → 1.4.1）
+- [x] 正式签名、GitHub Release（1.0.0 → 1.4.2）
 - [ ] 最近删除回收站
 - [ ] 游戏大版本更新后的兼容性复核
 

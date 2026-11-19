@@ -158,7 +158,11 @@ def is_database(rel):
 
 
 def sidecar_issues(device, manifest, scope):
-    """Problems with journal/WAL/SHM for databases in scope (stale or mismatched sidecars)."""
+    """Problems with journal/WAL/SHM for databases in scope (stale or mismatched sidecars).
+
+    Sidecars that are themselves in scope are skipped: the restore loop will write them, so a
+    missing/different sidecar is not a reason to block before restoring.
+    """
     present = {entry['path']: entry for entry in manifest['files'] if entry['present']}
     issues = []
     for rel in scope:
@@ -166,6 +170,8 @@ def sidecar_issues(device, manifest, scope):
             continue
         for suffix in ('-journal', '-wal', '-shm'):
             side = rel + suffix
+            if side in scope:
+                continue
             info = device.info(f'{DATA_DIR}/{side}')
             if side in present:
                 snap = present[side]

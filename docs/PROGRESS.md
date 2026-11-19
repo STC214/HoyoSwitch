@@ -271,3 +271,5 @@
 - 补充（00:25–00:40）：按第四轮审查修复 10 项，发布 1.4.0。P1：① updateSnapshotLocked(target, expectedMid) 把待更新账号 mid 绑定进采集前后校验，防「切到 B 后把 B 写进 A 卡」；② 账号库主文件与 journal/WAL/SHM 单命令连读、运行中稳定重读，规避 checkpoint 竞态；③ SQLite 空表即「未登录」，不再回退 token 键。P2：④ PC 边车校验覆盖 mihoyo_account、--only 未选 WAL、erify --remote；⑤ Device.info() 解析失败抛错；⑥ 悬浮服务独立 loating_game 偏好；⑦ 去重合并迁移被合并卡历史；⑧ command_restore 校验备份哈希；⑨ Activity 销毁后不弹切换框；⑩ 复制账号改布尔标记。验证：单测 24 通过；1.4.0 正式包覆盖安装 Root 保留，绝区零拍摄 1441ms、清单 12 项（journal 存在、WAL/SHM 缺失）。
 
 - 补充（00:43–00:50）：按第五轮审查修复 5 项，发布 1.4.1。P1：① 数据库连读命令改为 =0 … cat || f=1 … exit \，中途读取失败不再被吞；② 分组采集不再依赖 ccountDb，所有 .db 与 mihoyo_account 均与边车连读（星铁主库纳入）。P2：③ 历史迁移重名时用纯数字时间戳，isHistoryOf 仍识别；④ PC 恢复先拒绝边车冲突再写入，避免「新主库+旧 WAL」；⑤ 分组读取加显式存在标志，零字节存在文件不再当缺失。验证：单测 26 通过；1.4.1 正式包覆盖安装 Root 保留，星铁拍摄 2017ms、清单 12 项（PORTE db+journal 存在、WAL/SHM 缺失、mihoyo_account 已分组）。
+
+- 补充（00:50–01:00）：按第六轮审查修复 3 项并修复真机发现的 UTF-16 账号库问题，发布 1.4.2。① PC 边车预检跳过「已纳入恢复范围」的边车，完整恢复不再误拦截本应恢复的 journal（新增 2 个测试）；② migrateHistory 返回布尔，迁移失败不再 delete 旧历史；③ 分组协议改长度前缀帧，二进制含分隔符不再截断。真机验证 #3 时发现：账号库是 UTF-16 编码，Android SQLite 读不了（一直报 READONLY_ROLLBACK / no such table），egexMid 增加 UTF-16LE/BE 解码，SQLite 失败时按编码扫描恢复账号识别；验证绝区零识别为具体卡片而非 token 回退。
