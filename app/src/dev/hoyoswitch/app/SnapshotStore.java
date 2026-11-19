@@ -271,7 +271,7 @@ final class SnapshotStore {
         return candidate;
     }
 
-    List<Snapshot> list(GameProfile game) {
+    synchronized List<Snapshot> list(GameProfile game) {
         List<Snapshot> snapshots = new ArrayList<>();
         File[] children = dirFor(game).listFiles();
         if (children == null) {
@@ -431,7 +431,7 @@ final class SnapshotStore {
      * captures), trims snapshots created by the self tests, and collapses snapshots of the same
      * account into a single card.
      */
-    void cleanup(GameProfile game) {
+    synchronized void cleanup(GameProfile game) {
         File base = dirFor(game);
         File[] children = base.listFiles();
         long cutoff = System.currentTimeMillis() - 3 * 60 * 1000L;
