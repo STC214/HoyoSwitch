@@ -26,6 +26,7 @@ import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -508,19 +509,18 @@ final class SnapshotStore {
             String dbPath = game.path(game.accountDb);
             byte[] db = readDevice(dbPath);
             if (db != null) {
-                String mid = dbCurrentMid(db, readDevice(dbPath + "-journal"),
+                List<String> candidates = dbCandidateMids(db, readDevice(dbPath + "-journal"),
                         readDevice(dbPath + "-wal"), readDevice(dbPath + "-shm"));
-                if (mid != null) {
-                    // SQLite answered: either a concrete mid, or a genuinely empty table. An empty
-                    // table means logged out even when stale token keys remain in the prefs. When
-                    // SQLite cannot open the (UTF-16) file and the byte scan is used instead, a
-                    // deleted account's remnant has no live token, so require that corroboration.
-                    if (!mid.isEmpty() && hasLiveToken(game, mid)) {
+                // A deleted account leaves no token, so the byte-scan fallback must not report a
+                // remnant that no longer has a live token; keep scanning to the next candidate.
+                for (String candidate : candidates) {
+                    if (hasLiveToken(game, candidate)) {
                         current.loggedIn = true;
-                        current.mid = mid;
+                        current.mid = candidate;
+                        break;
                     }
-                    return current;
                 }
+                return current;
             }
             // DB missing or unreadable: fall back to the token key as a best effort.
             if (game.tokenPrefs != null) {
@@ -575,14 +575,19 @@ final class SnapshotStore {
         GameProfile game = snapshot.game;
         if (game.accountDb != null) {
             try {
-                String mid = dbCurrentMid(readSnapshot(snapshot, game.accountDb),
+                List<String> candidates = dbCandidateMids(readSnapshot(snapshot, game.accountDb),
                         snapshotBytes(snapshot, game.accountDb + "-journal"),
                         snapshotBytes(snapshot, game.accountDb + "-wal"),
                         snapshotBytes(snapshot, game.accountDb + "-shm"));
-                if (mid != null) {
-                    // "" means the table is empty: no account, do not trust stale token keys.
-                    return mid;
+                // Apply the same liveness check as device detection: a snapshot of an account that
+                // was deleted (no token) must not be identified by its byte-scan remnant.
+                for (String candidate : candidates) {
+                    if (hasSnapshotToken(snapshot, candidate)) {
+                        return candidate;
+                    }
                 }
+                // The DB was readable but has no live account: do not trust stale token keys.
+                return "";
             } catch (IOException ignored) {
                 // Fall through to the token key only when the DB could not be read.
             }
@@ -624,19 +629,17 @@ final class SnapshotStore {
             Pattern.compile("([0-9a-z_]+_mhy)(\\d+)(\\d{13})");
 
     /**
-     * Reads the newest row with a real SQLite query so deleted rows in freelist pages cannot be
-     * mistaken for the current account. Falls back to a byte scan only if SQLite cannot open it.
+     * Candidate account ids, newest first. Uses a real SQLite query when possible (so deleted rows
+     * in freelist pages are never returned); otherwise falls back to a byte scan whose results are
+     * later filtered against a live token. An empty list means the table is genuinely empty or the
+     * file could not be read at all.
      */
-    private String dbCurrentMid(byte[] db) {
-        return dbCurrentMid(db, null, null, null);
-    }
-
-    private String dbCurrentMid(byte[] db, byte[] journal, byte[] wal, byte[] shm) {
+    private List<String> dbCandidateMids(byte[] db, byte[] journal, byte[] wal, byte[] shm) {
         File dir = new File(context.getCacheDir(), "dbscan-" + System.nanoTime());
         boolean queried = false;
         try {
             if (!dir.mkdirs()) {
-                return null;
+                return Collections.emptyList();
             }
             File main = new File(dir, "account.db");
             Files.write(main.toPath(), db);
@@ -651,12 +654,11 @@ final class SnapshotStore {
                 if (cursor.moveToFirst()) {
                     String mid = cursor.getString(0);
                     if (mid != null && !mid.isEmpty()) {
-                        return mid;
+                        return Collections.singletonList(mid);
                     }
                 }
-                // Query succeeded with zero rows: the table is genuinely empty. Never fall back to
-                // a byte scan here, or deleted rows in freelist pages could be mistaken for a user.
-                return "";
+                // Query succeeded with zero rows: the table is genuinely empty.
+                return Collections.emptyList();
             } finally {
                 database.close();
             }
@@ -667,8 +669,8 @@ final class SnapshotStore {
         }
         // queried == true means the table was genuinely empty (returned above). Otherwise SQLite
         // could not read the file (Android's SQLite only supports UTF-8; these account DBs are
-        // UTF-16), so scan the raw bytes with encoding awareness as a best effort.
-        return queried ? "" : regexMid(db);
+        // UTF-16), so scan the raw bytes; the caller filters them against a live token.
+        return queried ? Collections.<String>emptyList() : regexMid(db);
     }
 
     private static void writeIfPresent(File file, byte[] data) throws IOException {
@@ -677,7 +679,7 @@ final class SnapshotStore {
         }
     }
 
-    private static String regexMid(byte[] db) {
+    private static List<String> regexMid(byte[] db) {
         // SQLite's text encoding lives at offset 56-59 (1=UTF-8, 2=UTF-16LE, 3=UTF-16BE); the BOM
         // at the start of the header is a fallback. Android's SQLite cannot open UTF-16 databases,
         // so fall back to a byte-level scan of the account row.
@@ -694,16 +696,15 @@ final class SnapshotStore {
 
     /**
      * Scans the raw bytes for {@code <mid>_mhy<digits...><13-digit timestamp>} without assuming any
-     * 2-byte alignment, so records stored at odd offsets are still found. Returns the mid with the
-     * largest timestamp, or "" when none is found.
+     * 2-byte alignment, so records stored at odd offsets are still found. Returns the distinct mids
+     * ordered by descending timestamp (so the newest is first), or an empty list when none is found.
      */
-    private static String scanRows(byte[] db, boolean le, boolean be) {
+    private static List<String> scanRows(byte[] db, boolean le, boolean be) {
         byte[] needle = le ? new byte[]{'_', 0, 'm', 0, 'h', 0, 'y', 0}
                 : be ? new byte[]{0, '_', 0, 'm', 0, 'h', 0, 'y'}
                 : new byte[]{'_', 'm', 'h', 'y'};
         int step = (le || be) ? 2 : 1;
-        String bestMid = "";
-        long bestTimestamp = -1;
+        Map<String, Long> byMid = new LinkedHashMap<>();
         int index = indexOf(db, needle, 0);
         while (index >= 0) {
             StringBuilder mid = new StringBuilder("_mhy");
@@ -730,11 +731,10 @@ final class SnapshotStore {
             }
             if (digits.length() >= 13) {
                 try {
-                    long timestamp = Long.parseLong(
-                            digits.substring(digits.length() - 13));
-                    if (timestamp > bestTimestamp) {
-                        bestTimestamp = timestamp;
-                        bestMid = mid.toString();
+                    long timestamp = Long.parseLong(digits.substring(digits.length() - 13));
+                    Long previous = byMid.get(mid.toString());
+                    if (previous == null || timestamp > previous) {
+                        byMid.put(mid.toString(), timestamp);
                     }
                 } catch (NumberFormatException ignored) {
                     // Skip malformed digits.
@@ -742,7 +742,13 @@ final class SnapshotStore {
             }
             index = indexOf(db, needle, index + 1);
         }
-        return bestMid;
+        List<Map.Entry<String, Long>> entries = new ArrayList<>(byMid.entrySet());
+        entries.sort((left, right) -> Long.compare(right.getValue(), left.getValue()));
+        List<String> result = new ArrayList<>();
+        for (Map.Entry<String, Long> entry : entries) {
+            result.add(entry.getKey());
+        }
+        return result;
     }
 
     private static int indexOf(byte[] data, byte[] needle, int from) {
@@ -822,6 +828,22 @@ final class SnapshotStore {
         try {
             byte[] token = readDevice(game.path(game.tokenPrefs));
             return token != null && hasTokenKey(token, mid);
+        } catch (IOException error) {
+            return false;
+        }
+    }
+
+    /** Like {@link #hasLiveToken} but checks the snapshot's own stored token prefs. */
+    private boolean hasSnapshotToken(Snapshot snapshot, String mid) {
+        if (snapshot.game.tokenPrefs == null) {
+            return true;
+        }
+        Entry tokenEntry = snapshot.entry(snapshot.game.tokenPrefs);
+        if (tokenEntry == null || !tokenEntry.present) {
+            return false;
+        }
+        try {
+            return hasTokenKey(readSnapshot(snapshot, snapshot.game.tokenPrefs), mid);
         } catch (IOException error) {
             return false;
         }
