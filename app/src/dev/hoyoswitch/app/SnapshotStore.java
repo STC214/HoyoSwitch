@@ -366,7 +366,7 @@ final class SnapshotStore {
             String path = game.path(relative);
             script.append("printf '\\n--HSN1DB--").append(relative).append("\\n'; ");
             script.append("if [ -e ").append(quote(path)).append(" ]; then printf 'P'; stat -c %s ")
-                    .append(quote(path)).append("; cat ").append(quote(path))
+                    .append(quote(path)).append(" || f=1; cat ").append(quote(path))
                     .append(" || f=1; else printf 'A'; fi; ");
         }
         script.append("exit $f");
@@ -378,7 +378,8 @@ final class SnapshotStore {
     }
 
     /** Parses the length-prefixed framing; content bytes may contain anything, even markers. */
-    private Map<String, byte[]> splitDbGroup(String data, List<String> relatives) {
+    private Map<String, byte[]> splitDbGroup(String data, List<String> relatives)
+            throws IOException {
         Map<String, byte[]> out = new LinkedHashMap<>();
         int cursor = 0;
         for (String relative : relatives) {
@@ -390,8 +391,7 @@ final class SnapshotStore {
             }
             int pos = start + marker.length();
             if (pos >= data.length()) {
-                out.put(relative, null);
-                continue;
+                throw new IOException("数据库分帧截断: " + relative);
             }
             if (data.charAt(pos) == 'A') {
                 out.put(relative, null);
@@ -402,21 +402,18 @@ final class SnapshotStore {
             pos++;
             int newline = data.indexOf('\n', pos);
             if (newline < 0) {
-                out.put(relative, null);
-                break;
+                throw new IOException("数据库分帧缺少长度分隔符: " + relative);
             }
             long size;
             try {
                 size = Long.parseLong(data.substring(pos, newline).trim());
             } catch (NumberFormatException error) {
-                out.put(relative, null);
-                break;
+                throw new IOException("数据库分帧长度无效: " + relative, error);
             }
             int contentStart = newline + 1;
             int contentEnd = contentStart + (int) size;
             if (contentEnd > data.length()) {
-                out.put(relative, null);
-                break;
+                throw new IOException("数据库分帧内容被截断: " + relative);
             }
             out.put(relative, data.substring(contentStart, contentEnd)
                     .getBytes(StandardCharsets.ISO_8859_1));
@@ -679,40 +676,94 @@ final class SnapshotStore {
     }
 
     private static String regexMid(byte[] db) {
-        // SQLite's text encoding lives at offset 56-59 (1=UTF-8, 2=UTF-16LE, 3=UTF-16BE), which is
-        // authoritative; the BOM at the start of the header is a fallback. Android's SQLite cannot
-        // open UTF-16 databases, so the byte scan must decode the account row correctly.
+        // SQLite's text encoding lives at offset 56-59 (1=UTF-8, 2=UTF-16LE, 3=UTF-16BE); the BOM
+        // at the start of the header is a fallback. Android's SQLite cannot open UTF-16 databases,
+        // so fall back to a byte-level scan of the account row.
         int encoding = db.length > 59
                 ? (db[56] & 0xFF) << 24 | (db[57] & 0xFF) << 16
                 | (db[58] & 0xFF) << 8 | (db[59] & 0xFF)
                 : 0;
-        boolean utf16le = encoding == 2
+        boolean le = encoding == 2
                 || (db.length >= 2 && db[0] == (byte) 0xFF && db[1] == (byte) 0xFE);
-        boolean utf16be = encoding == 3
+        boolean be = encoding == 3
                 || (db.length >= 2 && db[0] == (byte) 0xFE && db[1] == (byte) 0xFF);
-        String text;
-        if (utf16le) {
-            text = new String(db, StandardCharsets.UTF_16LE);
-        } else if (utf16be) {
-            text = new String(db, StandardCharsets.UTF_16BE);
-        } else {
-            text = new String(db, StandardCharsets.ISO_8859_1);
-        }
-        Matcher matcher = ACCOUNT_ROW.matcher(text);
+        return scanRows(db, le, be);
+    }
+
+    /**
+     * Scans the raw bytes for {@code <mid>_mhy<digits...><13-digit timestamp>} without assuming any
+     * 2-byte alignment, so records stored at odd offsets are still found. Returns the mid with the
+     * largest timestamp, or "" when none is found.
+     */
+    private static String scanRows(byte[] db, boolean le, boolean be) {
+        byte[] needle = le ? new byte[]{'_', 0, 'm', 0, 'h', 0, 'y', 0}
+                : be ? new byte[]{0, '_', 0, 'm', 0, 'h', 0, 'y'}
+                : new byte[]{'_', 'm', 'h', 'y'};
+        int step = (le || be) ? 2 : 1;
         String bestMid = "";
         long bestTimestamp = -1;
-        while (matcher.find()) {
-            try {
-                long timestamp = Long.parseLong(matcher.group(3));
-                if (timestamp > bestTimestamp) {
-                    bestTimestamp = timestamp;
-                    bestMid = matcher.group(1);
+        int index = indexOf(db, needle, 0);
+        while (index >= 0) {
+            StringBuilder mid = new StringBuilder("_mhy");
+            int p = index - step;
+            while (p >= 0) {
+                char c = charAt(db, p, le, be);
+                if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '_') {
+                    mid.insert(0, c);
+                    p -= step;
+                } else {
+                    break;
                 }
-            } catch (NumberFormatException ignored) {
-                // Skip malformed rows.
             }
+            StringBuilder digits = new StringBuilder();
+            int q = index + needle.length;
+            while (q + (le || be ? 1 : 0) < db.length) {
+                char c = charAt(db, q, le, be);
+                if (c >= '0' && c <= '9') {
+                    digits.append(c);
+                    q += step;
+                } else {
+                    break;
+                }
+            }
+            if (digits.length() >= 13) {
+                try {
+                    long timestamp = Long.parseLong(
+                            digits.substring(digits.length() - 13));
+                    if (timestamp > bestTimestamp) {
+                        bestTimestamp = timestamp;
+                        bestMid = mid.toString();
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Skip malformed digits.
+                }
+            }
+            index = indexOf(db, needle, index + 1);
         }
         return bestMid;
+    }
+
+    private static int indexOf(byte[] data, byte[] needle, int from) {
+        outer:
+        for (int i = from; i + needle.length <= data.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (data[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    private static char charAt(byte[] db, int p, boolean le, boolean be) {
+        if (!le && !be) {
+            return (char) (db[p] & 0xFF);
+        }
+        if (le) {
+            return (char) ((db[p] & 0xFF) | ((db[p + 1] & 0xFF) << 8));
+        }
+        return (char) (((db[p] & 0xFF) << 8) | (db[p + 1] & 0xFF));
     }
 
     private byte[] snapshotBytes(Snapshot snapshot, String relative) {
