@@ -62,7 +62,7 @@ class Device:
             raise RuntimeError(f'info returned no output for {path}')
         fields = lines[0].split()
         if len(fields) != 5:
-            return None
+            raise RuntimeError(f'info output malformed for {path}: {lines[0]!r}')
         uid, gid, mode, size, mtime = fields
         context = ''
         for line in lines[1:]:

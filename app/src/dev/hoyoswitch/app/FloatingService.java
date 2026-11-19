@@ -25,6 +25,7 @@ public final class FloatingService extends Service {
     private static final int NOTIFICATION_ID = 1;
     private static final String PREFS_NAME = "ui";
     private static final String PREF_GAME = "game";
+    private static final String PREF_FLOATING_GAME = "floating_game";
     static final String EXTRA_PACKAGE = "pkg";
     private static boolean running;
 
@@ -80,12 +81,17 @@ public final class FloatingService extends Service {
     private GameProfile resolveGame(Intent intent) {
         String pkg = intent == null ? null : intent.getStringExtra(EXTRA_PACKAGE);
         if (pkg == null || pkg.isEmpty()) {
+            // The service tracks its own bound game, separate from the tab the UI is showing.
+            pkg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getString(PREF_FLOATING_GAME, null);
+        }
+        if (pkg == null || pkg.isEmpty()) {
             pkg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                     .getString(PREF_GAME, GameProfile.STARRAIL.pkg);
         }
         GameProfile resolved = GameProfile.byPackage(pkg);
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_GAME, resolved.pkg).apply();
+                .putString(PREF_FLOATING_GAME, resolved.pkg).apply();
         return resolved;
     }
 

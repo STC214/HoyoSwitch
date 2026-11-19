@@ -109,5 +109,23 @@ class BackupTest(unittest.TestCase):
         self.assertLess(parts.index('--serial'), parts.index('restore'))
 
 
+class RestoreTest(unittest.TestCase):
+    def test_restore_rejects_backup_with_changed_bytes(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        device = mock.Mock()
+        device.game_pids.return_value = []
+        device.read.return_value = BASIC
+
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp)
+            (record / 'original.xml').write_bytes(BASIC.replace(b'true', b'false'))
+            meta = {'source_path': login_state.PORTE_PREFS, 'sha256_before': 'f' * 64}
+            (record / 'meta.json').write_text(json.dumps(meta), encoding='utf-8')
+            self.assertEqual(login_state.command_restore(device, str(record), False), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -152,20 +152,30 @@ def show(rows):
     return differing
 
 
-def stale_sidecars(device, manifest, scope):
-    """WAL/SHM/journal files present on the device but absent from the snapshot."""
-    present = {entry['path'] for entry in manifest['files'] if entry['present']}
-    stale = []
+def is_database(rel):
+    """Database paths: the account db ends in .db, mihoyo_account has no extension."""
+    return rel.endswith('.db') or rel == 'databases/mihoyo_account'
+
+
+def sidecar_issues(device, manifest, scope):
+    """Problems with journal/WAL/SHM for databases in scope (stale or mismatched sidecars)."""
+    present = {entry['path']: entry for entry in manifest['files'] if entry['present']}
+    issues = []
     for rel in scope:
-        if not rel.endswith('.db'):
+        if not is_database(rel):
             continue
         for suffix in ('-journal', '-wal', '-shm'):
             side = rel + suffix
+            info = device.info(f'{DATA_DIR}/{side}')
             if side in present:
-                continue
-            if device.info(f'{DATA_DIR}/{side}') is not None:
-                stale.append(side)
-    return stale
+                snap = present[side]
+                if info is None:
+                    issues.append(f'{side}: missing but snapshot expects it')
+                elif digest(device.read(f'{DATA_DIR}/{side}')) != snap['sha256']:
+                    issues.append(f'{side}: differs from snapshot')
+            elif info is not None:
+                issues.append(f'{side}: present but absent from snapshot')
+    return issues
 
 
 def verify_local(record, manifest):
@@ -196,13 +206,12 @@ def restore(device, record, apply, only=()):
         return 1
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
-    stale = stale_sidecars(device, manifest, wanted)
+    stale = sidecar_issues(device, manifest, wanted)
     if not differing and not stale:
         print('device already matches the snapshot; nothing to restore')
         return 0
     if not differing and stale:
-        print('stale database sidecars remain: ' + ', '.join(sorted(stale)), file=sys.stderr)
-        print('remove them manually before starting the game', file=sys.stderr)
+        print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
         return 1
     if not apply:
         print('dry run; add --apply to restore')
@@ -242,10 +251,9 @@ def restore(device, record, apply, only=()):
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     leftover = show(rows)
-    stale = stale_sidecars(device, manifest, wanted)
+    stale = sidecar_issues(device, manifest, wanted)
     if stale:
-        print('stale database sidecars remain: ' + ', '.join(sorted(stale)), file=sys.stderr)
-        print('remove them manually before starting the game', file=sys.stderr)
+        print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
         return 1
     print(f'written={written} skipped={skipped} safety_snapshot={safety} '
           f'scope={"selected" if only else "all"}')
@@ -263,6 +271,7 @@ def command_verify(device, record, remote):
         print(line, file=sys.stderr)
     if remote:
         problems += [f'{row[0]}: {row[1]}' for row in remote_state(device, manifest) if row[1] not in SAME + ('extra',)]
+        problems += sidecar_issues(device, manifest, {entry['path'] for entry in manifest['files']})
     if problems:
         print(f'snapshot {record.name}: FAILED', file=sys.stderr)
         return 1
@@ -275,7 +284,8 @@ def command_diff(device, record, only=()):
     wanted = {entry['path'] for entry in select(manifest['files'], only)}
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
-    return 1 if differing else 0
+    sidecar = sidecar_issues(device, manifest, wanted)
+    return 1 if (differing or sidecar) else 0
 
 
 def main():

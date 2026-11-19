@@ -179,6 +179,10 @@ def command_restore(device, record_dir, apply):
     if meta.get('source_path') != PORTE_PREFS:
         print(f'record targets {meta.get("source_path")}, refusing to restore', file=sys.stderr)
         return 1
+    if digest(original) != meta.get('sha256_before'):
+        print('original.xml does not match the recorded sha256_before; refusing to restore',
+              file=sys.stderr)
+        return 1
     expected = login_status(original)
     if device.game_pids():
         print(f'{PACKAGE} is running; stop it before writing', file=sys.stderr)

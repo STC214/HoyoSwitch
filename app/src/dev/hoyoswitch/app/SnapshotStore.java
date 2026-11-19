@@ -193,16 +193,47 @@ final class SnapshotStore {
         // the files are being read, the resulting mix must not be saved as a valid snapshot.
         String beforeMid = live ? currentMidOrEmpty(game) : null;
         // Each file needs its own root call; run them in parallel instead of one after another.
+        // The account database and its journal/WAL/SHM are read together so a checkpoint that
+        // lands between reads cannot leave the main file and sidecars inconsistent.
+        List<String> dbGroup = new ArrayList<>();
+        if (game.accountDb != null && game.files.contains(game.accountDb)) {
+            dbGroup.add(game.accountDb);
+            for (String sideSuffix : new String[]{"-journal", "-wal", "-shm"}) {
+                String rel = game.accountDb + sideSuffix;
+                if (game.files.contains(rel)) {
+                    dbGroup.add(rel);
+                }
+            }
+        }
         ExecutorService pool = Executors.newFixedThreadPool(5);
         List<Future<Entry>> futures = new ArrayList<>();
+        List<String> singles = new ArrayList<>();
         boolean complete = false;
         try {
             for (String relative : game.files) {
+                if (dbGroup.contains(relative)) {
+                    continue;
+                }
                 boolean stable = live && game.switchFiles.contains(relative);
+                singles.add(relative);
                 futures.add(pool.submit(() -> captureOne(game, snapshot, relative, stable)));
             }
-            for (int index = 0; index < game.files.size(); index++) {
-                snapshot.entries.put(game.files.get(index), futures.get(index).get());
+            for (int index = 0; index < singles.size(); index++) {
+                snapshot.entries.put(singles.get(index), futures.get(index).get());
+            }
+            if (!dbGroup.isEmpty()) {
+                Map<String, byte[]> group = readDbGroup(game, dbGroup, live);
+                for (String relative : dbGroup) {
+                    byte[] bytes = group.get(relative);
+                    if (bytes == null || bytes.length == 0) {
+                        Entry missing = new Entry();
+                        missing.path = relative;
+                        missing.present = false;
+                        snapshot.entries.put(relative, missing);
+                    } else {
+                        snapshot.entries.put(relative, storeEntry(snapshot, relative, bytes));
+                    }
+                }
             }
             saveManifest(snapshot);
             String afterMid = live ? currentMidOrEmpty(game) : null;
@@ -243,12 +274,12 @@ final class SnapshotStore {
 
     private Entry captureOne(GameProfile game, Snapshot snapshot, String relative, boolean stable)
             throws IOException {
-        Entry entry = new Entry();
-        entry.path = relative;
         String path = game.path(relative);
         RootShell.Result content = RootShell.run(
                 "if [ -e " + quote(path) + " ]; then cat " + quote(path) + "; else exit 3; fi");
         if (content.code == 3) {
+            Entry entry = new Entry();
+            entry.path = relative;
             entry.present = false;
             return entry;
         }
@@ -258,10 +289,17 @@ final class SnapshotStore {
                     + (content.err.isEmpty() ? "" : " -> " + content.err));
         }
         byte[] bytes = stable ? stableRead(path, content.out) : content.out;
+        return storeEntry(snapshot, relative, bytes);
+    }
+
+    /** Encrypts {@code bytes} into the snapshot dir and fills the entry metadata + hash. */
+    private Entry storeEntry(Snapshot snapshot, String relative, byte[] bytes) throws IOException {
+        Entry entry = new Entry();
+        entry.path = relative;
         entry.present = true;
         entry.size = bytes.length;
         entry.sha256 = sha256(bytes);
-        Entry metadata = stat(path);
+        Entry metadata = stat(snapshot.game.path(relative));
         if (metadata != null) {
             entry.uid = metadata.uid;
             entry.gid = metadata.gid;
@@ -279,6 +317,75 @@ final class SnapshotStore {
             throw new IOException("本地副本校验失败: " + relative);
         }
         return entry;
+    }
+
+    /**
+     * Reads the account database together with its journal/WAL/SHM in one pass and, while the game
+     * runs, re-reads until two consecutive passes agree, so a checkpoint landing between the files
+     * cannot produce a snapshot whose main file and sidecars are inconsistent.
+     */
+    private Map<String, byte[]> readDbGroup(GameProfile game, List<String> relatives, boolean stable)
+            throws IOException {
+        String first = readDbGroupOnce(game, relatives);
+        if (stable) {
+            boolean settled = false;
+            for (int attempt = 0; attempt < 3 && !settled; attempt++) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                String again = readDbGroupOnce(game, relatives);
+                if (first.equals(again)) {
+                    settled = true;
+                } else {
+                    first = again;
+                }
+            }
+            if (!settled) {
+                throw new IOException("账号数据库在拍摄期间持续变化，请停止游戏后重试");
+            }
+        }
+        return splitDbGroup(first, relatives);
+    }
+
+    private String readDbGroupOnce(GameProfile game, List<String> relatives) throws IOException {
+        StringBuilder script = new StringBuilder();
+        for (String relative : relatives) {
+            String path = game.path(relative);
+            script.append("printf '\\n--HSN1DB--").append(relative).append("\\n'; ");
+            script.append("if [ -e ").append(quote(path)).append(" ]; then cat ")
+                    .append(quote(path)).append("; fi; ");
+        }
+        RootShell.Result result = RootShell.run(script.toString());
+        if (result.code != 0) {
+            throw new IOException("读取账号数据库失败(" + result.code + "): " + result.err);
+        }
+        return new String(result.out, StandardCharsets.ISO_8859_1);
+    }
+
+    private Map<String, byte[]> splitDbGroup(String data, List<String> relatives) {
+        Map<String, byte[]> out = new LinkedHashMap<>();
+        for (int index = 0; index < relatives.size(); index++) {
+            String relative = relatives.get(index);
+            String marker = "\n--HSN1DB--" + relative + "\n";
+            int start = data.indexOf(marker);
+            if (start < 0) {
+                out.put(relative, new byte[0]);
+                continue;
+            }
+            start += marker.length();
+            int end = data.length();
+            for (int other = index + 1; other < relatives.size(); other++) {
+                int candidate = data.indexOf("\n--HSN1DB--" + relatives.get(other) + "\n", start);
+                if (candidate >= 0 && candidate < end) {
+                    end = candidate;
+                }
+            }
+            out.put(relative, data.substring(start, end).getBytes(StandardCharsets.ISO_8859_1));
+        }
+        return out;
     }
 
     /**
@@ -369,12 +476,17 @@ final class SnapshotStore {
             if (db != null) {
                 String mid = dbCurrentMid(db, readDevice(dbPath + "-journal"),
                         readDevice(dbPath + "-wal"), readDevice(dbPath + "-shm"));
-                if (!mid.isEmpty()) {
-                    current.loggedIn = true;
-                    current.mid = mid;
+                if (mid != null) {
+                    // SQLite answered: either a concrete mid, or a genuinely empty table. An empty
+                    // table means logged out even when stale token keys remain in the prefs.
+                    if (!mid.isEmpty()) {
+                        current.loggedIn = true;
+                        current.mid = mid;
+                    }
                     return current;
                 }
             }
+            // DB missing or unreadable: fall back to the token key as a best effort.
             if (game.tokenPrefs != null) {
                 byte[] token = readDevice(game.path(game.tokenPrefs));
                 if (token != null) {
@@ -431,11 +543,12 @@ final class SnapshotStore {
                         snapshotBytes(snapshot, game.accountDb + "-journal"),
                         snapshotBytes(snapshot, game.accountDb + "-wal"),
                         snapshotBytes(snapshot, game.accountDb + "-shm"));
-                if (!mid.isEmpty()) {
+                if (mid != null) {
+                    // "" means the table is empty: no account, do not trust stale token keys.
                     return mid;
                 }
             } catch (IOException ignored) {
-                // Fall through to the token key.
+                // Fall through to the token key only when the DB could not be read.
             }
         }
         if (game.tokenPrefs != null) {
@@ -487,7 +600,7 @@ final class SnapshotStore {
         boolean queried = false;
         try {
             if (!dir.mkdirs()) {
-                return regexMid(db);
+                return null;
             }
             File main = new File(dir, "account.db");
             Files.write(main.toPath(), db);
@@ -516,7 +629,9 @@ final class SnapshotStore {
         } finally {
             deleteRecursively(dir);
         }
-        return queried ? "" : regexMid(db);
+        // queried == true means the table was genuinely empty (returned above); reaching here
+        // means SQLite could not read the file, which the caller treats as "undetermined".
+        return queried ? "" : null;
     }
 
     private static void writeIfPresent(File file, byte[] data) throws IOException {
@@ -581,13 +696,27 @@ final class SnapshotStore {
      */
     String updateSnapshot(Snapshot target) throws IOException {
         synchronized (LOCK) {
-            return updateSnapshotLocked(target);
+            return updateSnapshotLocked(target, null);
         }
     }
 
-    private String updateSnapshotLocked(Snapshot target) throws IOException {
-        String tempId = captureLocked(target.game, target.name);
-        File temp = new File(dirFor(target.game), tempId);
+    private String updateSnapshotLocked(Snapshot target, String expectedMid) throws IOException {
+        GameProfile game = target.game;
+        if (expectedMid != null) {
+            String before = currentMidOrEmpty(game);
+            if (before != null && !before.equals(expectedMid)) {
+                throw new IOException("当前账号已变化，未更新该快照");
+            }
+        }
+        String tempId = captureLocked(game, target.name);
+        if (expectedMid != null) {
+            String after = currentMidOrEmpty(game);
+            if (after != null && !after.equals(expectedMid)) {
+                deleteRecursively(new File(dirFor(game), tempId));
+                throw new IOException("拍摄期间账号发生变化，已取消本次更新");
+            }
+        }
+        File temp = new File(dirFor(game), tempId);
         File archived = archive(target.dir);
         if (archived == null) {
             // Never delete the current snapshot unless a history copy really exists.
@@ -725,6 +854,7 @@ final class SnapshotStore {
             }
             primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
             if (moveToHistory(historyDir, primary, snapshot)) {
+                migrateHistory(historyDir, primary, snapshot);
                 delete(snapshot);
             }
         }
@@ -760,6 +890,27 @@ final class SnapshotStore {
         }
         pruneHistory(historyDir, primary.id, null);
         return true;
+    }
+
+    /** Moves the merged card's own history under the primary id so it is not deleted with it. */
+    private void migrateHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
+        File[] versions = historyDir.listFiles();
+        if (versions == null) {
+            return;
+        }
+        for (File version : versions) {
+            if (!isHistoryOf(version.getName(), duplicate.id)) {
+                continue;
+            }
+            String suffix = version.getName().substring(duplicate.id.length() + 1);
+            File target = new File(historyDir, primary.id + "-" + suffix);
+            if (target.exists()) {
+                target = new File(historyDir,
+                        primary.id + "-" + System.currentTimeMillis() + "-" + suffix);
+            }
+            //noinspection ResultOfMethodCallIgnored
+            version.renameTo(target);
+        }
     }
 
     /** True when {@code name} is exactly {@code id + "-" + digits}; avoids id-prefix collisions. */
@@ -1016,7 +1167,7 @@ final class SnapshotStore {
             if (existing == null) {
                 return captureLocked(game, name);
             }
-            updateSnapshotLocked(existing);
+            updateSnapshotLocked(existing, null);
             if (name != null && !name.trim().isEmpty()) {
                 renameLocked(existing, name);
             }
@@ -1038,7 +1189,7 @@ final class SnapshotStore {
             if (matched == null) {
                 throw new IOException("当前账号不在" + game.label + "的任何快照中，请先拍一张快照");
             }
-            return updateSnapshotLocked(matched);
+            return updateSnapshotLocked(matched, current.mid);
         }
     }
 
@@ -1057,7 +1208,7 @@ final class SnapshotStore {
             if (!current.mid.equals(accountMid(target))) {
                 throw new IOException("当前登录的不是这个账号，未更新快照");
             }
-            return updateSnapshotLocked(target);
+            return updateSnapshotLocked(target, current.mid);
         }
     }
 

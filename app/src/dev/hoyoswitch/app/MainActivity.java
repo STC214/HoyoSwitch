@@ -1082,9 +1082,9 @@ public final class MainActivity extends Activity {
         boolean hasAccount = !snapshot.loginName.isEmpty();
         boolean hasPassword = !snapshot.passwordEnc.isEmpty();
         panel.addView(credentialRow("账号", hasAccount ? snapshot.loginName : "未设置",
-                hasAccount ? snapshot.loginName : null, snapshot), matchWrap());
+                hasAccount ? snapshot.loginName : null, snapshot, false), matchWrap());
         panel.addView(credentialRow("密码", hasPassword ? "••••••••" : "未设置",
-                hasPassword ? "password" : null, snapshot), withTopMargin(matchWrap(), dp(4)));
+                hasPassword ? "" : null, snapshot, true), withTopMargin(matchWrap(), dp(4)));
 
         TextView edit = new TextView(this);
         edit.setText("编辑账号密码");
@@ -1097,7 +1097,7 @@ public final class MainActivity extends Activity {
     }
 
     private View credentialRow(String label, String value, String copyValue,
-                               SnapshotStore.Snapshot snapshot) {
+                               SnapshotStore.Snapshot snapshot, boolean password) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -1116,7 +1116,7 @@ public final class MainActivity extends Activity {
         copy.setContentDescription("复制" + label);
         copy.setOnClickListener(view -> {
             String actual = copyValue;
-            if ("password".equals(actual)) {
+            if (password) {
                 try {
                     actual = store.password(snapshot);
                 } catch (IOException error) {
@@ -1332,7 +1332,13 @@ public final class MainActivity extends Activity {
                 }
                 List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
-                main.post(() -> askSwitch(target, currentLabel));
+                main.post(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        askSwitch(target, currentLabel);
+                    } else {
+                        busy = false;
+                    }
+                });
             } catch (Exception error) {
                 appendLog("失败：" + error.getMessage());
                 busy = false;
