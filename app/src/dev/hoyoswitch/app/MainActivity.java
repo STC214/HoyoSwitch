@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -53,6 +54,62 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         store = new SnapshotStore(this);
         setContentView(buildLayout());
+        if (getIntent().getBooleanExtra("selftest", false)) {
+            main.postDelayed(this::runSelfTest, 1500);
+        }
+    }
+
+    /**
+     * Self test for the rollback path: switch to another account's snapshot with an injected
+     * verification failure, then require the device to be back at the pre-test state.
+     */
+    private void runSelfTest() {
+        runOp("回滚自检", () -> {
+            GameProfile target0 = game;
+            if (target0.isRunning()) {
+                target0.forceStop();
+            }
+            String baselineId = store.capture(target0, "回滚自检基线");
+            SnapshotStore.Snapshot baseline = store.load(target0, baselineId);
+            String baselineMid = store.accountMid(baseline);
+            SnapshotStore.Snapshot other = null;
+            for (SnapshotStore.Snapshot snapshot : store.list(target0)) {
+                String mid = store.accountMid(snapshot);
+                if (!snapshot.id.equals(baselineId) && !mid.isEmpty() && !mid.equals(baselineMid)) {
+                    other = snapshot;
+                    break;
+                }
+            }
+            if (other == null) {
+                throw new IOException("没有可用于自检的其他账号快照");
+            }
+            String outcome;
+            SnapshotStore.failAfterWrites = 1;
+            try {
+                store.switchTo(other, false, message -> Log.i("hoyoswitch", message));
+                outcome = "切换没有被注入的故障打断";
+            } catch (IOException error) {
+                outcome = error.getMessage();
+            } finally {
+                SnapshotStore.failAfterWrites = -1;
+            }
+            boolean rolledBack = true;
+            for (String relative : target0.switchFiles) {
+                SnapshotStore.Entry entry = baseline.entry(relative);
+                if (entry == null || !entry.present) {
+                    continue;
+                }
+                byte[] current = store.readDeviceForTest(target0.path(relative));
+                if (current == null
+                        || !SnapshotStore.sha256(current).equals(entry.sha256)) {
+                    rolledBack = false;
+                    break;
+                }
+            }
+            String verdict = rolledBack ? "PASS" : "FAIL";
+            Log.i("hoyoswitch", "SELFTEST " + verdict + " :: " + outcome);
+            appendLog("自检结果：" + (rolledBack ? "回滚成功" : "回滚失败") + "；" + outcome);
+        });
     }
 
     @Override

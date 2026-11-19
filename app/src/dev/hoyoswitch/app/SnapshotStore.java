@@ -69,6 +69,9 @@ final class SnapshotStore {
     private static final int HISTORY_KEEP = 3;
     private static final int VERSION = 2;
 
+    /** Self-test hook: fail verification after this many successful writes; -1 disables it. */
+    static volatile int failAfterWrites = -1;
+
     private final File root;
 
     SnapshotStore(Context context) {
@@ -380,13 +383,14 @@ final class SnapshotStore {
             }
         } catch (IOException failure) {
             Snapshot safety = load(game, safetyId);
+            String suffix;
             try {
                 restoreAll(safety, progress);
-                throw new IOException(failure.getMessage() + "；已回滚到切换前状态", failure);
+                suffix = "；已回滚到切换前状态";
             } catch (IOException rollbackFailure) {
-                throw new IOException(failure.getMessage() + "；回滚失败: " + rollbackFailure.getMessage(),
-                        failure);
+                suffix = "；回滚失败: " + rollbackFailure.getMessage();
             }
+            throw new IOException(failure.getMessage() + suffix, failure);
         }
     }
 
@@ -417,6 +421,13 @@ final class SnapshotStore {
     }
 
     private void verifyWritten(String path, Entry entry) throws IOException {
+        if (failAfterWrites > 0) {
+            failAfterWrites--;
+            if (failAfterWrites == 0) {
+                failAfterWrites = -1;
+                throw new IOException("自检：注入的校验失败");
+            }
+        }
         byte[] actual = readDevice(path);
         if (actual == null || !sha256(actual).equals(entry.sha256)) {
             throw new IOException("读回内容与快照不一致: " + entry.path);
@@ -478,6 +489,11 @@ final class SnapshotStore {
     private byte[] readDevice(String path) throws IOException {
         RootShell.Result result = RootShell.run("cat " + quote(path));
         return result.code == 0 ? result.out : null;
+    }
+
+    /** Exposed for the on-device self test, which compares device bytes with a snapshot. */
+    byte[] readDeviceForTest(String path) throws IOException {
+        return readDevice(path);
     }
 
     private void writeDevice(String path, byte[] data) throws IOException {
