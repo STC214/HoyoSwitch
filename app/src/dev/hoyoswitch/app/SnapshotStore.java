@@ -27,6 +27,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * Per-game snapshots of the state files. Payloads are encrypted with a Keystore key, every write
@@ -161,19 +165,42 @@ final class SnapshotStore {
         snapshot.createdAt = System.currentTimeMillis();
         snapshot.dir = dir;
         boolean live = game.isRunning();
+        long started = System.currentTimeMillis();
+        // Each file needs its own root call; run them in parallel instead of one after another.
+        ExecutorService pool = Executors.newFixedThreadPool(5);
         try {
+            List<Future<Entry>> futures = new ArrayList<>();
             for (String relative : game.files) {
-                snapshot.entries.put(relative, captureOne(game, snapshot, relative, live));
+                boolean stable = live && game.switchFiles.contains(relative);
+                futures.add(pool.submit(() -> captureOne(game, snapshot, relative, stable)));
+            }
+            for (int index = 0; index < game.files.size(); index++) {
+                snapshot.entries.put(game.files.get(index), futures.get(index).get());
             }
             saveManifest(snapshot);
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause();
+            deleteRecursively(dir);
+            if (cause instanceof IOException) {
+                throw (IOException) cause;
+            }
+            throw new IOException("拍摄失败: " + cause, cause);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            deleteRecursively(dir);
+            throw new IOException("拍摄被中断", error);
         } catch (IOException error) {
             deleteRecursively(dir);
             throw error;
+        } finally {
+            pool.shutdownNow();
         }
+        Log.i("hoyoswitch", "capture " + snapshot.id + " took "
+                + (System.currentTimeMillis() - started) + " ms");
         return snapshot.id;
     }
 
-    private Entry captureOne(GameProfile game, Snapshot snapshot, String relative, boolean live)
+    private Entry captureOne(GameProfile game, Snapshot snapshot, String relative, boolean stable)
             throws IOException {
         Entry entry = new Entry();
         entry.path = relative;
@@ -183,7 +210,7 @@ final class SnapshotStore {
             entry.present = false;
             return entry;
         }
-        byte[] bytes = live ? stableRead(path, content.out) : content.out;
+        byte[] bytes = stable ? stableRead(path, content.out) : content.out;
         entry.present = true;
         entry.size = bytes.length;
         entry.sha256 = sha256(bytes);
@@ -215,7 +242,7 @@ final class SnapshotStore {
         byte[] candidate = first;
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
-                Thread.sleep(150);
+                Thread.sleep(100);
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
                 break;

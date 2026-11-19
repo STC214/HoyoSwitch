@@ -60,6 +60,8 @@ public final class MainActivity extends Activity {
     private Button launchButton;
     private TextView logToggle;
     private int refreshGeneration;
+    private ScrollView pageScroll;
+    private ScrollView columnScroll;
     private Dialog visibleDialog;
     private volatile boolean busy;
 
@@ -314,6 +316,7 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
 
         ScrollView rightScroll = new ScrollView(this);
+        columnScroll = rightScroll;
         rightScroll.addView(right);
         // Focus restore can scroll a column down on first layout; start both at the top.
         leftScroll.post(() -> leftScroll.scrollTo(0, 0));
@@ -422,6 +425,7 @@ public final class MainActivity extends Activity {
         root.addView(statusPill, withBottomMargin(matchWrap(), dp(6)));
 
         ScrollView scroll = new ScrollView(this);
+        pageScroll = scroll;
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, 0, 0, dp(8));
@@ -713,6 +717,8 @@ public final class MainActivity extends Activity {
 
     private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
                              GameProfile selected) {
+        ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
+        int savedScrollY = scroll == null ? 0 : scroll.getScrollY();
         cardList.removeAllViews();
         if (!selected.supported) {
             TextView unsupported = new TextView(this);
@@ -721,6 +727,7 @@ public final class MainActivity extends Activity {
             unsupported.setTextColor(getColor(R.color.text_muted));
             unsupported.setPadding(0, dp(20), 0, 0);
             cardList.addView(unsupported, matchWrap());
+            restoreScroll(scroll, savedScrollY);
             return;
         }
         if (snapshots.isEmpty()) {
@@ -730,6 +737,7 @@ public final class MainActivity extends Activity {
             empty.setTextColor(getColor(R.color.text_muted));
             empty.setPadding(0, dp(20), 0, 0);
             cardList.addView(empty, matchWrap());
+            restoreScroll(scroll, savedScrollY);
             return;
         }
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
@@ -795,6 +803,15 @@ public final class MainActivity extends Activity {
 
             cardList.addView(card, withBottomMargin(matchWrap(), dp(14)));
         }
+        restoreScroll(scroll, savedScrollY);
+    }
+
+    /** Rebuilding the card list must not yank the page back to the top. */
+    private void restoreScroll(ScrollView scroll, int y) {
+        if (scroll == null || y <= 0) {
+            return;
+        }
+        scroll.post(() -> scroll.scrollTo(0, y));
     }
 
     private static LinearLayout.LayoutParams withBottomMargin(LinearLayout.LayoutParams params,
@@ -1195,7 +1212,7 @@ public final class MainActivity extends Activity {
         }
         busy = true;
         appendLog("开始：" + label);
-        statusView.setText("执行中：" + label);
+        // Keep the status pill untouched: rewriting it changes its height and shifts the list.
         new Thread(() -> {
             try {
                 operation.run();
