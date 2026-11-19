@@ -88,6 +88,9 @@ final class SnapshotStore {
 
     /** Self-test hook: fail verification after this many successful writes; -1 disables it. */
     static volatile int failAfterWrites = -1;
+    /** Diagnostics for the rollback self test: proves the fault fired and a write happened. */
+    static volatile int injectedFailures;
+    static volatile int deviceWrites;
 
     private final File root;
     private final Context context;
@@ -186,6 +189,9 @@ final class SnapshotStore {
         snapshot.dir = dir;
         boolean live = game.isRunning();
         long started = System.currentTimeMillis();
+        // Snapshot the account identity before and after: if the client switches accounts while
+        // the files are being read, the resulting mix must not be saved as a valid snapshot.
+        String beforeMid = live ? currentMidOrEmpty(game) : null;
         // Each file needs its own root call; run them in parallel instead of one after another.
         ExecutorService pool = Executors.newFixedThreadPool(5);
         List<Future<Entry>> futures = new ArrayList<>();
@@ -199,6 +205,10 @@ final class SnapshotStore {
                 snapshot.entries.put(game.files.get(index), futures.get(index).get());
             }
             saveManifest(snapshot);
+            String afterMid = live ? currentMidOrEmpty(game) : null;
+            if (beforeMid != null && afterMid != null && !beforeMid.equals(afterMid)) {
+                throw new IOException("拍摄期间账号发生变化，已取消本次快照");
+            }
             complete = true;
         } catch (ExecutionException error) {
             Throwable cause = error.getCause();
@@ -452,6 +462,15 @@ final class SnapshotStore {
      * SQLite stores each account row as {@code <mid><aid><type><13-digit timestamp><blob>}; the
      * newest timestamp is the account the game is currently on.
      */
+    private String currentMidOrEmpty(GameProfile game) {
+        try {
+            Current current = detectCurrentLocked(game);
+            return current.loggedIn ? current.mid : "";
+        } catch (IOException error) {
+            return null;
+        }
+    }
+
     private static final Pattern ACCOUNT_ROW =
             Pattern.compile("([0-9a-z_]+_mhy)(\\d+)(\\d{13})");
 
@@ -465,6 +484,7 @@ final class SnapshotStore {
 
     private String dbCurrentMid(byte[] db, byte[] journal, byte[] wal, byte[] shm) {
         File dir = new File(context.getCacheDir(), "dbscan-" + System.nanoTime());
+        boolean queried = false;
         try {
             if (!dir.mkdirs()) {
                 return regexMid(db);
@@ -478,12 +498,16 @@ final class SnapshotStore {
                     SQLiteDatabase.OPEN_READONLY);
             try (Cursor cursor = database.rawQuery(
                     "SELECT mid FROM porte_account_table ORDER BY timestamp DESC LIMIT 1", null)) {
+                queried = true;
                 if (cursor.moveToFirst()) {
                     String mid = cursor.getString(0);
                     if (mid != null && !mid.isEmpty()) {
                         return mid;
                     }
                 }
+                // Query succeeded with zero rows: the table is genuinely empty. Never fall back to
+                // a byte scan here, or deleted rows in freelist pages could be mistaken for a user.
+                return "";
             } finally {
                 database.close();
             }
@@ -492,7 +516,7 @@ final class SnapshotStore {
         } finally {
             deleteRecursively(dir);
         }
-        return regexMid(db);
+        return queried ? "" : regexMid(db);
     }
 
     private static void writeIfPresent(File file, byte[] data) throws IOException {
@@ -738,6 +762,23 @@ final class SnapshotStore {
         return true;
     }
 
+    /** True when {@code name} is exactly {@code id + "-" + digits}; avoids id-prefix collisions. */
+    private static boolean isHistoryOf(String name, String id) {
+        if (!name.startsWith(id + "-")) {
+            return false;
+        }
+        String suffix = name.substring(id.length() + 1);
+        if (suffix.isEmpty()) {
+            return false;
+        }
+        for (int index = 0; index < suffix.length(); index++) {
+            if (!Character.isDigit(suffix.charAt(index))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Keeps the newest versions of one snapshot, always sparing {@code keep}. */
     private void pruneHistory(File historyDir, String id, File keep) {
         File[] versions = historyDir.listFiles();
@@ -747,7 +788,7 @@ final class SnapshotStore {
         List<File> mine = new ArrayList<>();
         boolean keepPresent = false;
         for (File version : versions) {
-            if (!version.getName().startsWith(id + "-")) {
+            if (!isHistoryOf(version.getName(), id)) {
                 continue;
             }
             if (version.equals(keep)) {
@@ -783,7 +824,7 @@ final class SnapshotStore {
         String prefix = snapshot.id + "-";
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
         for (File version : versions) {
-            if (!version.isDirectory() || !version.getName().startsWith(prefix)) {
+            if (!version.isDirectory() || !isHistoryOf(version.getName(), snapshot.id)) {
                 continue;
             }
             HistoryEntry entry = new HistoryEntry();
@@ -887,7 +928,7 @@ final class SnapshotStore {
         }
         String prefix = snapshot.id + "-";
         for (File version : versions) {
-            if (version.getName().startsWith(prefix)) {
+            if (isHistoryOf(version.getName(), snapshot.id)) {
                 deleteRecursively(version);
             }
         }
@@ -902,6 +943,13 @@ final class SnapshotStore {
 
     private void restoreHistoryLocked(Snapshot snapshot, HistoryEntry entry) throws IOException {
         String currentName = snapshot.name;
+        Snapshot candidate;
+        try {
+            // Validate the archived manifest before the current version is touched.
+            candidate = readManifest(snapshot.game, entry.dir);
+        } catch (JSONException error) {
+            throw new IOException("历史版本清单损坏，未回滚", error);
+        }
         File archived = archive(snapshot.dir, entry.dir);
         if (archived == null) {
             throw new IOException("无法归档当前版本，已中止回滚");
@@ -912,20 +960,21 @@ final class SnapshotStore {
             throw new IOException("无法回滚到该历史版本");
         }
         try {
-            Snapshot restored = readManifest(snapshot.game, snapshot.dir);
-            restored.id = snapshot.id;
-            restored.name = currentName;
-            restored.lastUsedAt = snapshot.lastUsedAt;
-            restored.loginName = snapshot.loginName;
-            restored.passwordEnc = snapshot.passwordEnc;
-            saveManifest(restored);
-            // Keep the caller's object in sync; a later rename() must write the restored hashes.
-            snapshot.entries.clear();
-            snapshot.entries.putAll(restored.entries);
-            snapshot.name = currentName;
-            snapshot.createdAt = restored.createdAt;
-        } catch (JSONException error) {
-            throw new IOException("回滚后的快照清单损坏", error);
+            candidate.id = snapshot.id;
+            candidate.name = currentName;
+            candidate.lastUsedAt = snapshot.lastUsedAt;
+            candidate.loginName = snapshot.loginName;
+            candidate.passwordEnc = snapshot.passwordEnc;
+            candidate.dir = snapshot.dir;
+            saveManifest(candidate);
+            adopt(snapshot, candidate);
+        } catch (IOException | RuntimeException error) {
+            // Undo the directory swap so a failed save cannot leave a broken current card.
+            //noinspection ResultOfMethodCallIgnored
+            snapshot.dir.renameTo(entry.dir);
+            //noinspection ResultOfMethodCallIgnored
+            archived.renameTo(snapshot.dir);
+            throw new IOException("回滚失败，已恢复原版本", error);
         }
     }
 
@@ -1143,6 +1192,10 @@ final class SnapshotStore {
                 verifyWritten(path, entry);
                 progress.report("已写入并校验: " + relative);
             } else if (exists(path)) {
+                if (suffix.equals("-wal") || suffix.equals("-shm")) {
+                    // Deleting uncheckpointed WAL data would lose the account's latest state.
+                    throw new IOException("当前数据库存在未合并的 WAL，请先启动并正常退出游戏后再切换");
+                }
                 RootShell.Result removed = RootShell.run("rm -f " + quote(path));
                 if (removed.code != 0 || exists(path)) {
                     throw new IOException("无法移除旧边车文件: " + relative);
@@ -1172,12 +1225,13 @@ final class SnapshotStore {
             RootShell.Result result = RootShell.run(
                     "chcon " + quote(entry.context) + " " + quote(path));
             if (result.code != 0) {
-                Log.w("hoyoswitch", "chcon failed for " + path + ": " + result.err);
+                throw new IOException("无法恢复 SELinux 上下文: " + entry.path + " " + result.err);
             }
         }
         Entry after = stat(path);
         if (after == null || !entry.uid.equals(after.uid) || !entry.gid.equals(after.gid)
-                || !entry.mode.equals(after.mode)) {
+                || !entry.mode.equals(after.mode)
+                || (!entry.context.isEmpty() && !entry.context.equals(after.context))) {
             throw new IOException("无法恢复文件属性: " + entry.path);
         }
     }
@@ -1236,6 +1290,7 @@ final class SnapshotStore {
             failAfterWrites--;
             if (failAfterWrites == 0) {
                 failAfterWrites = -1;
+                injectedFailures++;
                 throw new IOException("自检：注入的校验失败");
             }
         }
@@ -1323,6 +1378,7 @@ final class SnapshotStore {
         if (result.code != 0) {
             throw new IOException("写入失败: " + path + (result.err.isEmpty() ? "" : " -> " + result.err));
         }
+        deviceWrites++;
     }
 
     private void saveManifest(Snapshot snapshot) throws IOException {

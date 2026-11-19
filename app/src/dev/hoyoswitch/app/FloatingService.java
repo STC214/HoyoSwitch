@@ -23,6 +23,8 @@ import android.widget.Toast;
 public final class FloatingService extends Service {
     private static final String CHANNEL = "floating";
     private static final int NOTIFICATION_ID = 1;
+    private static final String PREFS_NAME = "ui";
+    private static final String PREF_GAME = "game";
     static final String EXTRA_PACKAGE = "pkg";
     private static boolean running;
 
@@ -46,6 +48,7 @@ public final class FloatingService extends Service {
     public void onCreate() {
         super.onCreate();
         running = true;
+        game = resolveGame(null);
         startAsForeground();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         try {
@@ -59,8 +62,8 @@ public final class FloatingService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        game = resolveGame(intent);
         if (intent != null && intent.hasExtra(EXTRA_PACKAGE)) {
-            game = GameProfile.byPackage(intent.getStringExtra(EXTRA_PACKAGE));
             NotificationManager manager =
                     (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (manager != null) {
@@ -68,6 +71,22 @@ public final class FloatingService extends Service {
             }
         }
         return START_STICKY;
+    }
+
+    /**
+     * Resolves the game from the intent, falling back to the last selection so a service
+     * restarted by the system (null intent) does not silently update the wrong game's snapshot.
+     */
+    private GameProfile resolveGame(Intent intent) {
+        String pkg = intent == null ? null : intent.getStringExtra(EXTRA_PACKAGE);
+        if (pkg == null || pkg.isEmpty()) {
+            pkg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    .getString(PREF_GAME, GameProfile.STARRAIL.pkg);
+        }
+        GameProfile resolved = GameProfile.byPackage(pkg);
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(PREF_GAME, resolved.pkg).apply();
+        return resolved;
     }
 
     @Override

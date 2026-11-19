@@ -54,6 +54,8 @@ final class GameProfile {
                     "shared_prefs/mdk_passport_sp.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db",
                     "databases/PORTE_ACCOUNT_PRODUCT.db-journal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-wal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-shm",
                     "databases/mihoyo_account",
                     "databases/mihoyo_account-journal"),
             Arrays.asList(
@@ -81,6 +83,8 @@ final class GameProfile {
                     "shared_prefs/com.miHoYo.Yuanshen.v2.playerprefs.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db",
                     "databases/PORTE_ACCOUNT_PRODUCT.db-journal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-wal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-shm",
                     "databases/mihoyo_account",
                     "databases/mihoyo_account-journal"),
             Arrays.asList(
@@ -110,6 +114,8 @@ final class GameProfile {
                     "shared_prefs/com.miHoYo.Nap.v2.playerprefs.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db",
                     "databases/PORTE_ACCOUNT_PRODUCT.db-journal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-wal",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-shm",
                     "databases/mihoyo_account",
                     "databases/mihoyo_account-journal"),
             Arrays.asList(

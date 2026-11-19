@@ -152,6 +152,22 @@ def show(rows):
     return differing
 
 
+def stale_sidecars(device, manifest, scope):
+    """WAL/SHM/journal files present on the device but absent from the snapshot."""
+    present = {entry['path'] for entry in manifest['files'] if entry['present']}
+    stale = []
+    for rel in scope:
+        if not rel.endswith('.db'):
+            continue
+        for suffix in ('-journal', '-wal', '-shm'):
+            side = rel + suffix
+            if side in present:
+                continue
+            if device.info(f'{DATA_DIR}/{side}') is not None:
+                stale.append(side)
+    return stale
+
+
 def verify_local(record, manifest):
     problems = []
     for entry in manifest['files']:
@@ -180,9 +196,14 @@ def restore(device, record, apply, only=()):
         return 1
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
-    if not differing:
+    stale = stale_sidecars(device, manifest, wanted)
+    if not differing and not stale:
         print('device already matches the snapshot; nothing to restore')
         return 0
+    if not differing and stale:
+        print('stale database sidecars remain: ' + ', '.join(sorted(stale)), file=sys.stderr)
+        print('remove them manually before starting the game', file=sys.stderr)
+        return 1
     if not apply:
         print('dry run; add --apply to restore')
         return 0
@@ -221,17 +242,7 @@ def restore(device, record, apply, only=()):
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     leftover = show(rows)
-    present = {entry['path'] for entry in manifest['files'] if entry['present']}
-    stale = []
-    for rel in present:
-        if not rel.endswith('.db'):
-            continue
-        for suffix in ('-journal', '-wal', '-shm'):
-            side = rel + suffix
-            if side in present:
-                continue
-            if device.info(f'{DATA_DIR}/{side}') is not None:
-                stale.append(side)
+    stale = stale_sidecars(device, manifest, wanted)
     if stale:
         print('stale database sidecars remain: ' + ', '.join(sorted(stale)), file=sys.stderr)
         print('remove them manually before starting the game', file=sys.stderr)

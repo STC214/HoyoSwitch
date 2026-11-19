@@ -197,6 +197,8 @@ public final class MainActivity extends Activity {
             }
             String outcome;
             SnapshotStore.failAfterWrites = 1;
+            SnapshotStore.injectedFailures = 0;
+            SnapshotStore.deviceWrites = 0;
             try {
                 store.switchTo(other, false, message -> Log.i("hoyoswitch", message));
                 outcome = "切换没有被注入的故障打断";
@@ -205,6 +207,9 @@ public final class MainActivity extends Activity {
             } finally {
                 SnapshotStore.failAfterWrites = -1;
             }
+            boolean triggered = SnapshotStore.injectedFailures == 1;
+            boolean wrote = SnapshotStore.deviceWrites > 0;
+            boolean rollbackReported = outcome != null && outcome.contains("已回滚");
             boolean rolledBack = true;
             SnapshotStore.Snapshot expected = store.load(target0, baselineId);
             for (String relative : target0.switchFiles) {
@@ -219,8 +224,10 @@ public final class MainActivity extends Activity {
                     break;
                 }
             }
-            String verdict = rolledBack ? "PASS" : "FAIL";
-            Log.i("hoyoswitch", "SELFTEST " + verdict + " :: " + outcome);
+            String verdict = rolledBack && triggered && wrote && rollbackReported ? "PASS" : "FAIL";
+            Log.i("hoyoswitch", "SELFTEST " + verdict + " :: " + outcome
+                    + " :: injected=" + triggered + " writes=" + wrote
+                    + " rollback=" + rollbackReported + " bytes=" + rolledBack);
             appendLog("自检结果：" + (rolledBack ? "回滚成功" : "回滚失败") + "；" + outcome);
         });
     }

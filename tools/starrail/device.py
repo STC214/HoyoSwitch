@@ -51,11 +51,15 @@ class Device:
         """Metadata for one remote path, or None when it does not exist."""
         quoted = shlex.quote(path)
         result = self._run(['exec-out', 'su', '-c',
-                            f'stat -c "%u %g %a %s %Y" {quoted} 2>/dev/null; ls -Z {quoted} 2>/dev/null'], ok=(0, 1))
+                            f'if [ ! -e {quoted} ]; then exit 3; fi; '
+                            f'stat -c "%u %g %a %s %Y" {quoted}; ls -Z {quoted}'],
+                           ok=(0, 3))
+        if result.returncode == 3:
+            return None
         text = result.stdout.decode('utf-8', errors='replace').strip()
         lines = [line for line in text.splitlines() if line.strip()]
         if not lines:
-            return None
+            raise RuntimeError(f'info returned no output for {path}')
         fields = lines[0].split()
         if len(fields) != 5:
             return None
