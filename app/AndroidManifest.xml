@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="dev.hoyoswitch.app" android:versionCode="1" android:versionName="0.1">
+    package="dev.hoyoswitch.app" android:versionCode="2" android:versionName="0.2">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application android:label="账号切换（原型）" android:icon="@drawable/app_icon"
         android:debuggable="true" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
@@ -10,5 +14,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".FloatingService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="account snapshot update button" />
+        </service>
     </application>
 </manifest>

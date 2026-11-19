@@ -1,10 +1,16 @@
 package dev.hoyoswitch.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -87,8 +93,17 @@ public final class MainActivity extends Activity {
         actions.addView(refreshButton, weightWrap());
         root.addView(actions, matchWrap());
 
+        LinearLayout extra = new LinearLayout(this);
+        extra.setOrientation(LinearLayout.HORIZONTAL);
+        Button floatingButton = new Button(this);
+        floatingButton.setText("悬浮按钮");
+        floatingButton.setOnClickListener(view -> toggleFloating());
+        extra.addView(floatingButton, weightWrap());
+        root.addView(extra, matchWrap());
+
         TextView hint = new TextView(this);
-        hint.setText("拍摄与切换前请先停止游戏；切换只写 4 个账号相关文件，并自动保存切换前状态。");
+        hint.setText("拍摄与切换前请先停止游戏；切换只写 4 个文件并自动备份。"
+                + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」，或用悬浮按钮刷新当前账号。");
         hint.setTextSize(12);
         hint.setPadding(0, pad / 2, 0, pad / 2);
         root.addView(hint, matchWrap());
@@ -122,6 +137,10 @@ public final class MainActivity extends Activity {
 
     private static LinearLayout.LayoutParams weightWrap() {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    }
+
+    private static LinearLayout.LayoutParams weightWrap(float weight) {
+        return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
     }
 
     private void refresh() {
@@ -229,7 +248,12 @@ public final class MainActivity extends Activity {
             Button switchButton = new Button(this);
             switchButton.setText("切换到此账号");
             switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
-            row.addView(switchButton, weightWrap());
+            Button updateButton = new Button(this);
+            updateButton.setText("更新此快照");
+            updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name,
+                    () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
+            row.addView(switchButton, weightWrap(2f));
+            row.addView(updateButton, weightWrap(1f));
             card.addView(row, matchWrap());
 
             cardList.addView(card, matchWrap());
@@ -291,6 +315,27 @@ public final class MainActivity extends Activity {
             appendLog("已保存快照 " + id);
             main.post(() -> nameInput.setText(""));
         });
+    }
+
+    private void toggleFloating() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast("请先允许悬浮窗权限，授权后回到 App 再点一次");
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
+        }
+        if (FloatingService.isRunning()) {
+            stopService(new Intent(this, FloatingService.class));
+            toast("悬浮按钮已关闭");
+        } else {
+            startForegroundService(new Intent(this, FloatingService.class));
+            toast("悬浮按钮已开启：可拖动，点它更新快照");
+        }
     }
 
     private void runOp(String label, Op operation) {

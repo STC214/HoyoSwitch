@@ -240,6 +240,31 @@ final class SnapshotStore {
         }
     }
 
+    /**
+     * Re-captures the device state into an existing snapshot, keeping its id and name so the
+     * account card stays in place. The client rewrites token, SDK prefs and the database
+     * timestamp on every launch, so a snapshot has to be refreshed after a real login.
+     */
+    String updateSnapshot(Snapshot target) throws IOException {
+        String tempId = capture(target.name);
+        File temp = new File(root, tempId);
+        deleteRecursively(target.dir);
+        if (!temp.renameTo(target.dir)) {
+            throw new IOException("无法替换旧快照目录: " + target.id);
+        }
+        try {
+            // The fresh capture carries the temporary id; rewrite it so the manifest matches the
+            // directory the card is bound to.
+            Snapshot refreshed = readManifest(target.dir);
+            refreshed.id = target.id;
+            refreshed.name = target.name;
+            saveManifest(refreshed);
+        } catch (JSONException error) {
+            throw new IOException("更新后的快照清单损坏", error);
+        }
+        return target.id;
+    }
+
     /** Restores the four switch files of {@code target}, with safety snapshot and rollback. */
     void switchTo(Snapshot target, boolean launchAfterwards, Progress progress) throws IOException {
         if (StarRailProfile.isRunning()) {
