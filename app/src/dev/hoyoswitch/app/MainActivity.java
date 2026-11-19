@@ -488,7 +488,7 @@ public final class MainActivity extends Activity {
         controlCard.addView(utilityRow, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("拍摄与切换前请先停止游戏；切换只写该游戏的账号文件并自动备份。"
+        hint.setText("拍摄快照可直接进行，不需要停止游戏；切换账号时会先停止游戏，只写该游戏的账号文件并自动备份。"
                 + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」。");
         hint.setTextSize(12);
         hint.setTextColor(getColor(R.color.text_muted));
@@ -652,7 +652,8 @@ public final class MainActivity extends Activity {
                         : " · 尚未适配";
                 statusView.setText(rootText + " · " + gameText + " · "
                         + (runningNow ? "游戏运行中" : "游戏已停止") + accountText);
-                captureButton.setEnabled(rootedNow && selected.supported && !runningNow && !busy);
+                // Stay clickable whenever the tap can be explained: running game / unsupported game.
+                captureButton.setEnabled(rootedNow && !busy);
                 captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
                 launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
                 launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
@@ -1119,6 +1120,18 @@ public final class MainActivity extends Activity {
 
     private void capture() {
         final GameProfile selected = game;
+        if (!selected.supported) {
+            toast(selected.label + " 尚未适配，不能拍摄快照");
+            return;
+        }
+        if (!RootShell.isRooted()) {
+            toast("未取得 Root，无法拍摄快照");
+            return;
+        }
+        captureNow(selected);
+    }
+
+    private void captureNow(GameProfile selected) {
         String name = nameInput.getText().toString();
         runOp("拍摄快照", () -> {
             String id = store.captureAccount(selected, name);

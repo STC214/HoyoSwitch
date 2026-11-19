@@ -140,9 +140,6 @@ final class SnapshotStore {
         if (!game.supported) {
             throw new IOException(game.label + " 尚未适配，不能拍摄快照");
         }
-        if (game.isRunning()) {
-            throw new IOException("游戏正在运行，请先停止游戏再拍摄快照");
-        }
         File base = dirFor(game);
         if (!base.isDirectory() && !base.mkdirs()) {
             throw new IOException("无法创建快照目录: " + base);

@@ -51,35 +51,14 @@ final class AccountUpdater {
     }
 
     /**
-     * Stops the game for a consistent capture, re-checks that the account did not change while
-     * stopping, then refreshes the snapshot and brings the game back.
+     * Refreshes the snapshot from the current device state. Capturing does not require stopping
+     * the game; only switching does.
      */
     private static String apply(SnapshotStore store, SnapshotStore.Snapshot target,
                                 SnapshotStore.Progress progress) throws IOException {
-        GameProfile game = target.game;
-        boolean wasRunning = game.isRunning();
-        if (wasRunning) {
-            game.forceStop();
-            progress.report("已停止" + game.label + "以便一致读取");
-        }
-        SnapshotStore.Current after = store.detectCurrent(game);
-        if (!after.loggedIn || after.mid.isEmpty()
-                || !after.mid.equals(store.accountMid(target))) {
-            if (wasRunning) {
-                game.launch();
-            }
-            throw new IOException("停止游戏后账号状态不再匹配，未更新快照");
-        }
+        progress.report("正在读取当前状态（游戏运行中也可以更新）");
         String id = store.updateSnapshot(target);
         progress.report("已用当前状态更新快照 " + id);
-        if (wasRunning) {
-            try {
-                game.launch();
-                progress.report("已重新启动游戏");
-            } catch (IOException error) {
-                progress.report("快照已更新，但重新启动游戏失败：" + error.getMessage());
-            }
-        }
         return id;
     }
 }
