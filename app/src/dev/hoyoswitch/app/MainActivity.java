@@ -96,8 +96,8 @@ public final class MainActivity extends Activity {
                     logToggle.setText("显示日志");
                 }
             }
-            renderTabs();
         }
+        renderTabs();
         String selftest = getIntent().getStringExtra("selftest");
         if ("cardops".equals(selftest)) {
             main.postDelayed(this::runCardOpsTest, 1200);

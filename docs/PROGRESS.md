@@ -45,6 +45,7 @@
 - 补充（21:54–21:58）：绝区零登录后结构确认，发布 0.14.1。登录 A（`0a0ycvi51n_mhy`）后文件从 3 个涨到 73 个，出现 `porte_sdk_account_PRODUCT.xml`、`porte_sdk_token_PRODUCT.xml`、`PORTE_ACCOUNT_PRODUCT.db`（`porte_account_table` 一行 mid/aid/timestamp）与 `mihoyo_account`，但**没有 `combo_widget.xml`**——与同原神同构。`GameProfile.ZZZ` 改为 `tokenPrefs + accountDb` 识别（`identityPrefs=null`），切换集合暂定 token prefs + SDK 偏好 + 账号库 3 个文件。真机验证：状态行识别为「已登录，但不在任何快照中」，账号 A 拍摄成功（`20261119-215539`，10/10，981ms，卡片标当前登录）。待登录 B 后做切换验证。
 - 补充（22:00–22:06）：绝区零双向切换验证，发布 0.15.0。登录 B 后拍摄 `20261119-220027`（10/10，971ms），随后把 `switchVerified` 打开做真机切换：B→A 后游戏内 **UID 17444270**、A→B 后 **UID 17708164**，确认 3 个切换文件足够；切换确认框显示「3 个账号文件」。三个游戏现在都完成双向验证。切号后首次进游戏会弹「资源下载」，属账号内容差异，与切换无关。剩余：绝区零分栏的 `CARDOPS` 与注入回滚自检未单独跑。
 - 补充（22:29–22:33）：记住上次分栏并发布 0.15.1。分栏选择写入 `SharedPreferences("ui").game`（`onPause` 与切栏时保存），启动时在 `setContentView` 之前恢复，`--es selftest` 也随之在最后使用的分栏上跑。真机验证：切到原神 → `am force-stop` → 重启后直接落在原神；切到绝区零 → 重启后落在绝区零。绝区零分栏补跑自检：`CARDOPS PASS`（.history 落在 `com.miHoYo.Nap`）、`SELFTEST PASS`（注入失败后回滚，卡数保持）。
+- 补充（22:35）：启动高亮修正，发布 0.15.2。恢复分栏后立刻调用 `renderTabs()`，启动 1 秒内检查 uiautomator 即可看到目标分栏 `selected=true`，不再等 `refresh()` 的异步回调；删除旋转恢复路径里重复的调用。`CARDOPS PASS`。
 
 ## 2026-11-19 第八轮：新数据代复验，4 文件切换可复现
 
