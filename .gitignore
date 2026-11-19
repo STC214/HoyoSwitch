@@ -1,2 +1,4 @@
 /game-clients/
 /account-snapshots/
+__pycache__/
+*.pyc
