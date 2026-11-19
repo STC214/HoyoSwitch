@@ -1137,14 +1137,39 @@ public final class MainActivity extends Activity {
         password.setHint("密码（加密保存）");
         password.setSingleLine(true);
         password.setInputType(android.text.InputType.TYPE_CLASS_TEXT
-                | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         styleInput(password);
         try {
             password.setText(store.password(snapshot));
         } catch (IOException error) {
             toast("密码读取失败：" + error.getMessage());
         }
-        card.addView(password, withBottomMargin(matchWrap(), dp(14)));
+
+        ImageView eye = new ImageView(this);
+        eye.setImageResource(R.drawable.ic_eye_off);
+        eye.setColorFilter(getColor(R.color.accent));
+        eye.setPadding(dp(10), dp(10), dp(10), dp(10));
+        eye.setContentDescription("显示密码");
+        eye.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        final boolean[] revealed = {false};
+        eye.setOnClickListener(view -> {
+            revealed[0] = !revealed[0];
+            password.setTransformationMethod(revealed[0]
+                    ? android.text.method.HideReturnsTransformationMethod.getInstance()
+                    : android.text.method.PasswordTransformationMethod.getInstance());
+            eye.setImageResource(revealed[0] ? R.drawable.ic_eye : R.drawable.ic_eye_off);
+            eye.setContentDescription(revealed[0] ? "隐藏密码" : "显示密码");
+            password.setSelection(password.getText().length());
+        });
+
+        LinearLayout passwordRow = new LinearLayout(this);
+        passwordRow.setOrientation(LinearLayout.HORIZONTAL);
+        passwordRow.setGravity(Gravity.CENTER_VERTICAL);
+        passwordRow.addView(password, weightWrap());
+        LinearLayout.LayoutParams eyeParams = new LinearLayout.LayoutParams(dp(44), dp(44));
+        eyeParams.leftMargin = dp(8);
+        passwordRow.addView(eye, eyeParams);
+        card.addView(passwordRow, withBottomMargin(matchWrap(), dp(14)));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
