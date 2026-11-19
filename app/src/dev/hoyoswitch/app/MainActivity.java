@@ -5,7 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -47,6 +47,8 @@ public final class MainActivity extends Activity {
     private ScrollView logScroll;
     private Button captureButton;
     private Button launchButton;
+    private TextView logToggle;
+    private int refreshGeneration;
     private volatile boolean busy;
 
     @Override
@@ -94,15 +96,29 @@ public final class MainActivity extends Activity {
             }
 
             int historyCount = 0;
+            SnapshotStore.Snapshot historyOwner = null;
+            SnapshotStore.HistoryEntry historyEntry = null;
             for (SnapshotStore.Snapshot snapshot : store.list(selected)) {
-                historyCount += store.history(snapshot).size();
+                List<SnapshotStore.HistoryEntry> entries = store.history(snapshot);
+                historyCount += entries.size();
+                if (historyOwner == null && !entries.isEmpty()) {
+                    historyOwner = snapshot;
+                    historyEntry = entries.get(0);
+                }
+            }
+            boolean historyOk = true;
+            if (historyOwner != null) {
+                store.restoreHistory(historyOwner, historyEntry);
+                historyOk = store.load(selected, historyOwner.id).dir.isDirectory();
             }
 
-            String verdict = renameOk && deleteOk ? "PASS" : "FAIL";
+            String verdict = renameOk && deleteOk && historyOk ? "PASS" : "FAIL";
             Log.i("hoyoswitch", "CARDOPS " + verdict + " rename=" + renameOk
-                    + " delete=" + deleteOk + " history_entries=" + historyCount);
+                    + " delete=" + deleteOk + " history_restore=" + historyOk
+                    + " history_entries=" + historyCount);
             appendLog("卡片操作自检：" + verdict + "（重命名=" + (renameOk ? "通过" : "失败")
                     + "，删除=" + (deleteOk ? "通过" : "失败")
+                    + "，历史回滚=" + (historyOk ? "通过" : "失败")
                     + "，历史版本 " + historyCount + " 个）");
         });
     }
@@ -180,6 +196,8 @@ public final class MainActivity extends Activity {
 
         statusView = new TextView(this);
         statusView.setText("正在检测 Root 与游戏状态…");
+        statusView.setTextSize(13);
+        statusView.setTextColor(getColor(R.color.text_muted));
         statusView.setPadding(0, pad / 2, 0, pad / 2);
         root.addView(statusView, matchWrap());
 
@@ -217,12 +235,20 @@ public final class MainActivity extends Activity {
         Button floatingButton = new Button(this);
         floatingButton.setText("悬浮按钮");
         floatingButton.setOnClickListener(view -> toggleFloating());
-        root.addView(floatingButton, matchWrap());
+        logToggle = new Button(this);
+        logToggle.setText("隐藏日志");
+        logToggle.setOnClickListener(view -> toggleLog());
+        LinearLayout utility = new LinearLayout(this);
+        utility.setOrientation(LinearLayout.HORIZONTAL);
+        utility.addView(floatingButton, weightWrap());
+        utility.addView(logToggle, weightWrap());
+        root.addView(utility, matchWrap());
 
         TextView hint = new TextView(this);
         hint.setText("拍摄与切换前请先停止游戏；切换只写该游戏的账号文件并自动备份。"
                 + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」，或用悬浮按钮刷新当前账号。");
         hint.setTextSize(12);
+        hint.setTextColor(getColor(R.color.text_muted));
         hint.setPadding(0, pad / 2, 0, pad / 2);
         root.addView(hint, matchWrap());
 
@@ -235,14 +261,38 @@ public final class MainActivity extends Activity {
         root.addView(scroll, scrollParams);
 
         logView = new TextView(this);
-        logView.setTextSize(12);
+        logView.setTextSize(11);
+        logView.setTextColor(getColor(R.color.text_muted));
         logScroll = new ScrollView(this);
         logScroll.addView(logView);
-        logScroll.setPadding(0, pad / 2, 0, 0);
-        int logHeight = (int) (60 * getResources().getDisplayMetrics().density);
+        logScroll.setBackground(cardBackground());
+        int logPad = dp(10);
+        logScroll.setPadding(logPad, logPad, logPad, logPad);
+        int logHeight = dp(84);
         root.addView(logScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, logHeight));
         return root;
+    }
+
+    private void toggleLog() {
+        if (logScroll == null) {
+            return;
+        }
+        boolean visible = logScroll.getVisibility() == View.VISIBLE;
+        logScroll.setVisibility(visible ? View.GONE : View.VISIBLE);
+        logToggle.setText(visible ? "显示日志" : "隐藏日志");
+    }
+
+    private GradientDrawable cardBackground() {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(getColor(R.color.card_bg));
+        drawable.setCornerRadius(dp(12));
+        drawable.setStroke(dp(1), getColor(R.color.card_stroke));
+        return drawable;
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density);
     }
 
     private static LinearLayout.LayoutParams matchWrap() {
@@ -269,6 +319,7 @@ public final class MainActivity extends Activity {
 
     private void refresh() {
         final GameProfile selected = game;
+        final int generation = ++refreshGeneration;
         new Thread(() -> {
             boolean rooted = RootShell.isRooted();
             boolean running;
@@ -294,6 +345,9 @@ public final class MainActivity extends Activity {
             final List<SnapshotStore.Snapshot> listed = snapshots;
             final SnapshotStore.Current currentNow = current;
             main.post(() -> {
+                if (generation != refreshGeneration) {
+                    return;
+                }
                 SnapshotStore.Snapshot matched = match(currentNow, listed);
                 String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
                 String gameText = versionNow.isEmpty()
@@ -320,7 +374,15 @@ public final class MainActivity extends Activity {
             button.setText(profile.label + (profile.supported ? "" : "（未适配）"));
             button.setTypeface(null, selected ? android.graphics.Typeface.BOLD
                     : android.graphics.Typeface.NORMAL);
-            button.setTextColor(selected ? Color.parseColor("#0B57D0") : Color.DKGRAY);
+            button.setTextColor(getColor(selected ? R.color.accent : R.color.text_muted));
+            if (selected) {
+                GradientDrawable background = new GradientDrawable();
+                background.setColor(getColor(R.color.tab_selected_bg));
+                background.setCornerRadius(dp(10));
+                button.setBackground(background);
+            } else {
+                button.setBackground(null);
+            }
         }
     }
 
@@ -373,7 +435,9 @@ public final class MainActivity extends Activity {
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(0, 20, 0, 20);
+            card.setBackground(cardBackground());
+            int cardPad = dp(14);
+            card.setPadding(cardPad, cardPad, cardPad, cardPad);
 
             TextView label = new TextView(this);
             boolean isCurrent = snapshot.id.equals(currentId);
@@ -411,8 +475,14 @@ public final class MainActivity extends Activity {
             row.addView(moreButton, weightWrap(0.6f));
             card.addView(row, matchWrap());
 
-            cardList.addView(card, matchWrap());
+            cardList.addView(card, withBottomMargin(matchWrap(), dp(10)));
         }
+    }
+
+    private static LinearLayout.LayoutParams withBottomMargin(LinearLayout.LayoutParams params,
+                                                              int margin) {
+        params.bottomMargin = margin;
+        return params;
     }
 
     private void showCardMenu(SnapshotStore.Snapshot snapshot) {
@@ -486,13 +556,9 @@ public final class MainActivity extends Activity {
             return;
         }
         busy = true;
-        appendLog("准备切换到 " + target.name);
+        appendLog("读取当前账号…");
         new Thread(() -> {
             try {
-                if (target.game.isRunning()) {
-                    target.game.forceStop();
-                    appendLog("已停止" + target.game.label);
-                }
                 SnapshotStore.Current current = store.detectCurrent(target.game);
                 List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
@@ -510,13 +576,21 @@ public final class MainActivity extends Activity {
                 .setTitle("切换" + target.game.label + "账号")
                 .setMessage("当前账号：" + currentLabel
                         + "\n目标账号：" + target.name
-                        + "\n\n将写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？")
+                        + "\n\n将先停止游戏，再写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？")
                 .setNegativeButton("取消", (dialog, which) -> {
+                    busy = false;
+                    refresh();
+                })
+                .setOnCancelListener(dialog -> {
                     busy = false;
                     refresh();
                 })
                 .setPositiveButton("切换", (dialog, which) -> new Thread(() -> {
                     try {
+                        if (target.game.isRunning()) {
+                            target.game.forceStop();
+                            appendLog("已停止" + target.game.label);
+                        }
                         store.switchTo(target, true, this::appendLog);
                     } catch (Exception error) {
                         appendLog("失败：" + error.getMessage());
@@ -529,15 +603,20 @@ public final class MainActivity extends Activity {
     }
 
     private void capture() {
+        final GameProfile selected = game;
         String name = nameInput.getText().toString();
         runOp("拍摄快照", () -> {
-            String id = store.capture(game, name);
+            String id = store.capture(selected, name);
             appendLog("已保存快照 " + id);
             main.post(() -> nameInput.setText(""));
         });
     }
 
     private void toggleFloating() {
+        if (!game.supported) {
+            toast(game.label + " 尚未适配，悬浮按钮只支持已验证的游戏");
+            return;
+        }
         if (!Settings.canDrawOverlays(this)) {
             toast("请先允许悬浮窗权限，授权后回到 App 再点一次");
             startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -549,7 +628,7 @@ public final class MainActivity extends Activity {
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
         }
-        if (FloatingService.isRunning()) {
+        if (isFloatingRunning()) {
             stopService(new Intent(this, FloatingService.class));
             toast("悬浮按钮已关闭");
         } else {
@@ -557,6 +636,24 @@ public final class MainActivity extends Activity {
             intent.putExtra(FloatingService.EXTRA_PACKAGE, game.pkg);
             startForegroundService(intent);
             toast("悬浮按钮已开启（" + game.label + "）：可拖动，点它更新快照");
+        }
+    }
+
+    /** The static flag can go stale if the process was killed; confirm with the system. */
+    private boolean isFloatingRunning() {
+        try {
+            android.app.ActivityManager manager =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            for (android.app.ActivityManager.RunningServiceInfo info
+                    : manager.getRunningServices(Integer.MAX_VALUE)) {
+                if (FloatingService.class.getName().equals(info.service.getClassName())
+                        && info.pid == android.os.Process.myPid()) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (RuntimeException error) {
+            return FloatingService.isRunning();
         }
     }
 
@@ -583,9 +680,21 @@ public final class MainActivity extends Activity {
     private void appendLog(String message) {
         main.post(() -> {
             String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
-            String text = logView.getText().toString();
             String line = time + "  " + message;
-            logView.setText(text.isEmpty() ? line : text + "\n" + line);
+            String text = logView.getText().toString();
+            String next = text.isEmpty() ? line : text + "\n" + line;
+            String[] lines = next.split("\n");
+            if (lines.length > 200) {
+                StringBuilder builder = new StringBuilder();
+                for (int index = lines.length - 200; index < lines.length; index++) {
+                    if (builder.length() > 0) {
+                        builder.append('\n');
+                    }
+                    builder.append(lines[index]);
+                }
+                next = builder.toString();
+            }
+            logView.setText(next);
             logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         });
     }

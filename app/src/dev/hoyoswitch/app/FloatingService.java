@@ -31,6 +31,7 @@ public final class FloatingService extends Service {
     }
 
     private GameProfile game = GameProfile.STARRAIL;
+    private volatile boolean updating;
 
     private WindowManager windowManager;
     private View button;
@@ -47,7 +48,13 @@ public final class FloatingService extends Service {
         running = true;
         startAsForeground();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        addButton();
+        try {
+            addButton();
+        } catch (RuntimeException error) {
+            Log.w("hoyoswitch", "无法显示悬浮按钮", error);
+            toast("无法显示悬浮按钮，请检查悬浮窗权限");
+            stopSelf();
+        }
     }
 
     @Override
@@ -157,6 +164,11 @@ public final class FloatingService extends Service {
     }
 
     private void updateSnapshot() {
+        if (updating) {
+            toast("正在更新，请稍候…");
+            return;
+        }
+        updating = true;
         toast("正在更新快照…");
         final SnapshotStore store = new SnapshotStore(this);
         new Thread(() -> {
@@ -166,6 +178,8 @@ public final class FloatingService extends Service {
                 toast("已更新快照 " + id);
             } catch (Exception error) {
                 toast("更新失败：" + error.getMessage());
+            } finally {
+                updating = false;
             }
         }).start();
     }

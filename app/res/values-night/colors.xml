@@ -1,0 +1,9 @@
+<resources>
+    <color name="window_bg">#121212</color>
+    <color name="card_bg">#1F1F1F</color>
+    <color name="card_stroke">#3C3C3C</color>
+    <color name="accent">#8AB4F8</color>
+    <color name="text_muted">#B0B0B0</color>
+    <color name="tab_selected_bg">#1E2A38</color>
+    <color name="log_bg">#171717</color>
+</resources>

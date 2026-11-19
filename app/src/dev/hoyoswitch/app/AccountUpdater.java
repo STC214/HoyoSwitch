@@ -10,7 +10,6 @@ final class AccountUpdater {
     /** Updates the snapshot that matches whichever account is currently logged in. */
     static String updateCurrent(SnapshotStore store, GameProfile game,
                                 SnapshotStore.Progress progress) throws IOException {
-        boolean wasRunning = stopForCapture(game, progress);
         SnapshotStore.Current current = store.detectCurrent(game);
         if (!current.loggedIn) {
             throw new IOException("当前未登录，没有可更新的账号快照");
@@ -28,7 +27,7 @@ final class AccountUpdater {
         if (matched == null) {
             throw new IOException("当前账号不在" + game.label + "的任何快照中，请先拍一张快照");
         }
-        return write(store, matched, wasRunning, progress);
+        return apply(store, matched, progress);
     }
 
     /**
@@ -38,7 +37,6 @@ final class AccountUpdater {
     static String updateTarget(SnapshotStore store, SnapshotStore.Snapshot target,
                                SnapshotStore.Progress progress) throws IOException {
         GameProfile game = target.game;
-        boolean wasRunning = stopForCapture(game, progress);
         SnapshotStore.Current current = store.detectCurrent(game);
         if (!current.loggedIn) {
             throw new IOException("当前未登录，无法更新该快照");
@@ -49,26 +47,38 @@ final class AccountUpdater {
         if (!current.mid.equals(store.accountMid(target))) {
             throw new IOException("当前登录的不是这个账号，未更新快照");
         }
-        return write(store, target, wasRunning, progress);
+        return apply(store, target, progress);
     }
 
-    private static boolean stopForCapture(GameProfile game, SnapshotStore.Progress progress)
-            throws IOException {
+    /**
+     * Stops the game for a consistent capture, re-checks that the account did not change while
+     * stopping, then refreshes the snapshot and brings the game back.
+     */
+    private static String apply(SnapshotStore store, SnapshotStore.Snapshot target,
+                                SnapshotStore.Progress progress) throws IOException {
+        GameProfile game = target.game;
         boolean wasRunning = game.isRunning();
         if (wasRunning) {
             game.forceStop();
             progress.report("已停止" + game.label + "以便一致读取");
         }
-        return wasRunning;
-    }
-
-    private static String write(SnapshotStore store, SnapshotStore.Snapshot target,
-                                boolean relaunch, SnapshotStore.Progress progress) throws IOException {
+        SnapshotStore.Current after = store.detectCurrent(game);
+        if (!after.loggedIn || after.mid.isEmpty()
+                || !after.mid.equals(store.accountMid(target))) {
+            if (wasRunning) {
+                game.launch();
+            }
+            throw new IOException("停止游戏后账号状态不再匹配，未更新快照");
+        }
         String id = store.updateSnapshot(target);
         progress.report("已用当前状态更新快照 " + id);
-        if (relaunch) {
-            target.game.launch();
-            progress.report("已重新启动游戏");
+        if (wasRunning) {
+            try {
+                game.launch();
+                progress.report("已重新启动游戏");
+            } catch (IOException error) {
+                progress.report("快照已更新，但重新启动游戏失败：" + error.getMessage());
+            }
         }
         return id;
     }

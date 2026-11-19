@@ -6,7 +6,6 @@ import android.security.keystore.KeyProperties;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
-import java.security.SecureRandom;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -85,12 +84,5 @@ final class SnapshotCrypto {
             generator.generateKey();
         }
         return (SecretKey) store.getKey(ALIAS, null);
-    }
-
-    /** Random bytes helper kept here to avoid a second SecureRandom instance elsewhere. */
-    static byte[] random(int size) {
-        byte[] bytes = new byte[size];
-        new SecureRandom().nextBytes(bytes);
-        return bytes;
     }
 }

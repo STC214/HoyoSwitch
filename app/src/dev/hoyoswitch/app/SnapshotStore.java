@@ -303,9 +303,13 @@ final class SnapshotStore {
     String updateSnapshot(Snapshot target) throws IOException {
         String tempId = capture(target.game, target.name);
         File temp = new File(dirFor(target.game), tempId);
-        archive(target.dir);
+        File archived = archive(target.dir);
         deleteRecursively(target.dir);
         if (!temp.renameTo(target.dir)) {
+            if (archived != null) {
+                //noinspection ResultOfMethodCallIgnored
+                archived.renameTo(target.dir);
+            }
             throw new IOException("无法替换旧快照目录: " + target.id);
         }
         try {
@@ -319,22 +323,44 @@ final class SnapshotStore {
         return target.id;
     }
 
-    private void archive(File dir) {
+    private File archive(File dir) {
+        return archive(dir, null);
+    }
+
+    /** Moves {@code dir} into the history folder, never pruning {@code keep}. */
+    private File archive(File dir, File keep) {
         File history = new File(dir.getParentFile(), HISTORY);
         if (!history.isDirectory() && !history.mkdirs()) {
-            return;
+            return null;
         }
         File destination = new File(history, dir.getName() + "-" + System.currentTimeMillis());
         if (!dir.renameTo(destination)) {
-            return;
+            return null;
         }
         File[] versions = history.listFiles();
         if (versions == null || versions.length <= HISTORY_KEEP) {
-            return;
+            return destination;
         }
         Arrays.sort(versions, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
         for (int index = HISTORY_KEEP; index < versions.length; index++) {
-            deleteRecursively(versions[index]);
+            if (!versions[index].equals(destination) && !versions[index].equals(keep)) {
+                deleteRecursively(versions[index]);
+            }
+        }
+        return destination;
+    }
+
+    /** Keeps the newest {@code keep} snapshots with the given name, deleting the rest. */
+    private void pruneNamed(GameProfile game, String name, int keep) {
+        int seen = 0;
+        for (Snapshot snapshot : list(game)) {
+            if (!name.equals(snapshot.name)) {
+                continue;
+            }
+            seen++;
+            if (seen > keep) {
+                delete(snapshot);
+            }
         }
     }
 
@@ -383,12 +409,27 @@ final class SnapshotStore {
 
     void delete(Snapshot snapshot) {
         deleteRecursively(snapshot.dir);
+        File history = new File(snapshot.dir.getParentFile(), HISTORY);
+        File[] versions = history.listFiles();
+        if (versions == null) {
+            return;
+        }
+        String prefix = snapshot.id + "-";
+        for (File version : versions) {
+            if (version.getName().startsWith(prefix)) {
+                deleteRecursively(version);
+            }
+        }
     }
 
     /** Rolls a snapshot back to one archived version; the current version is archived first. */
     void restoreHistory(Snapshot snapshot, HistoryEntry entry) throws IOException {
-        archive(snapshot.dir);
+        File archived = archive(snapshot.dir, entry.dir);
         if (!entry.dir.renameTo(snapshot.dir)) {
+            if (archived != null) {
+                //noinspection ResultOfMethodCallIgnored
+                archived.renameTo(snapshot.dir);
+            }
             throw new IOException("无法回滚到该历史版本");
         }
     }
@@ -432,6 +473,7 @@ final class SnapshotStore {
                 }
             }
             progress.report("切换完成，所有文件校验一致");
+            pruneNamed(game, "切换前自动备份", 3);
             if (launchAfterwards) {
                 game.launch();
                 progress.report("已请求启动游戏");
@@ -504,6 +546,10 @@ final class SnapshotStore {
         if (after == null || !after.uid.equals(entry.uid) || !after.gid.equals(entry.gid)
                 || !after.mode.equals(entry.mode)) {
             throw new IOException("属主或权限无法恢复: " + entry.path);
+        }
+        if (!entry.context.isEmpty() && !after.context.isEmpty()
+                && !after.context.equals(entry.context)) {
+            throw new IOException("SELinux 上下文无法恢复: " + entry.path);
         }
     }
 

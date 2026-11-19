@@ -18,26 +18,35 @@ def run(*args):
 
 def main():
     OUTPUT.mkdir(exist_ok=True)
-    res = OUTPUT / 'res' / 'drawable-nodpi'
-    res.mkdir(parents=True, exist_ok=True)
+    res = OUTPUT / 'res'
+    source_res = HERE / 'res'
+    if source_res.is_dir():
+        shutil.copytree(source_res, res, dirs_exist_ok=True)
+    drawable = res / 'drawable-nodpi'
+    drawable.mkdir(parents=True, exist_ok=True)
     icon = HERE.parent / '0i.png'
-    shutil.copyfile(icon, res / 'app_icon.png')
+    shutil.copyfile(icon, drawable / 'app_icon.png')
     flat = OUTPUT / 'res.zip'
     unsigned = OUTPUT / 'unsigned.apk'
     aligned = OUTPUT / 'aligned.apk'
     apk = OUTPUT / 'account-switch.apk'
     key = OUTPUT / 'local-test.p12'
     classes = OUTPUT / 'classes'
+    generated = OUTPUT / 'gen'
 
     if classes.exists():
         shutil.rmtree(classes)
     classes.mkdir(parents=True)
+    if generated.exists():
+        shutil.rmtree(generated)
+    generated.mkdir(parents=True)
 
-    run(TOOLS / 'aapt2.exe', 'compile', '--no-crunch', '--dir', res.parent, '-o', flat)
+    run(TOOLS / 'aapt2.exe', 'compile', '--no-crunch', '--dir', res, '-o', flat)
     run(TOOLS / 'aapt2.exe', 'link', '-I', ANDROID, '--manifest', HERE / 'AndroidManifest.xml',
-        '-o', unsigned, flat)
+        '--java', generated, '-o', unsigned, flat)
 
     sources = sorted(str(path) for path in SRC.rglob('*.java'))
+    sources += sorted(str(path) for path in generated.rglob('*.java'))
     run('javac', '--release', '8', '-encoding', 'UTF-8', '-Xlint:-options', '-classpath', ANDROID,
         '-d', classes, *sources)
 

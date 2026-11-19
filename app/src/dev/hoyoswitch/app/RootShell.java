@@ -78,13 +78,18 @@ final class RootShell {
                 process.getOutputStream().close();
                 byte[] out = drain(process.getInputStream());
                 drain(process.getErrorStream());
-                if (process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0
-                        && new String(out, StandardCharsets.UTF_8).contains("uid=0")) {
+                if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    failures.append(candidate).append(":timeout ");
+                    continue;
+                }
+                int exit = process.exitValue();
+                if (exit == 0 && new String(out, StandardCharsets.UTF_8).contains("uid=0")) {
                     resolved = candidate;
                     lastError = "";
                     return candidate;
                 }
-                failures.append(candidate).append(":exit").append(process.exitValue()).append(' ');
+                failures.append(candidate).append(":exit").append(exit).append(' ');
             } catch (IOException error) {
                 failures.append(candidate).append(":missing ");
             } catch (InterruptedException error) {
@@ -113,6 +118,8 @@ final class RootShell {
                 try (OutputStream stdin = process.getOutputStream()) {
                     stdin.write(input);
                     stdin.flush();
+                } catch (IOException ignored) {
+                    // The command may have exited before reading stdin; the exit code reports it.
                 }
             } else {
                 process.getOutputStream().close();
