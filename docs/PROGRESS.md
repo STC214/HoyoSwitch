@@ -42,6 +42,7 @@
 - 补充（20:29–20:40）：SDK 账号上限核查 + 卡片账号密码区，发布 0.13.0。反汇编两款游戏的 `classes*.dex` 确认：`PorteAccountManager` 默认上限 10，游戏 `PorteCustomModule.init()` 调 `setAccountNumberLimit(50)`，满额时 `saveAccount` 走 `deleteOldestOne()`（按 timestamp 淘汰最旧），并非 3 个。卡片新增「账号 / 密码」面板：两行各自带「复制」按钮（分别复制、互不影响），「编辑账号密码」弹窗可改；密码用 Keystore 加密后以 `passwordEnc` 写入清单，明文不落盘（实测清单无明文密码）。切换成功时记录 `lastUsedAt` 并在卡片显示「上次使用」；同游戏账号数 ≥45 时列表顶部红色提示 SDK 上限 50。真机验证：账号复制粘贴得 `test_account`、密码复制粘贴得 `Secret123`，互不串；测试数据已清除。
 - 补充（21:03–21:08）：密码默认打码，发布 0.13.1。编辑弹窗的密码框改为 `TYPE_TEXT_VARIATION_PASSWORD` 默认打码，右侧加眼睛图标（`ic_eye` / `ic_eye_off` 矢量图），点一下切换明文/掩码并更新无障碍描述。真机验证：打开弹窗时字段显示 `•••••••••`，点眼睛后显示 `Secret123`、图标描述变「隐藏密码」，保存后卡片仍显示 `密码：••••••••`；测试密码已清除。
 - 补充（21:09–21:14）：绝区零接入拍摄、切换待验证，发布 0.14.0。`GameProfile` 增加 `switchVerified` 标记；绝区零（3.3.0，入口与星铁相同的 ComboSDK）登记为可拍摄但切换未验证：卡片标「切换待验证（当前只能拍摄）」、切换按钮置灰，点切换会提示先做基准。真机验证：未登录状态下拍摄基准空快照成功（`20261119-211109`，479ms，11 个条目中只有 playerprefs 存在），状态行显示「未登录」。另修 `accountMid`：登录前快照缺少 combo_widget/token 时返回空而不是抛「文件缺失」，避免清理日志误报。
+- 补充（21:54–21:58）：绝区零登录后结构确认，发布 0.14.1。登录 A（`0a0ycvi51n_mhy`）后文件从 3 个涨到 73 个，出现 `porte_sdk_account_PRODUCT.xml`、`porte_sdk_token_PRODUCT.xml`、`PORTE_ACCOUNT_PRODUCT.db`（`porte_account_table` 一行 mid/aid/timestamp）与 `mihoyo_account`，但**没有 `combo_widget.xml`**——与同原神同构。`GameProfile.ZZZ` 改为 `tokenPrefs + accountDb` 识别（`identityPrefs=null`），切换集合暂定 token prefs + SDK 偏好 + 账号库 3 个文件。真机验证：状态行识别为「已登录，但不在任何快照中」，账号 A 拍摄成功（`20261119-215539`，10/10，981ms，卡片标当前登录）。待登录 B 后做切换验证。
 
 ## 2026-11-19 第八轮：新数据代复验，4 文件切换可复现
 

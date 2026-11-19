@@ -95,8 +95,8 @@ final class GameProfile {
             "databases/PORTE_ACCOUNT_PRODUCT.db");
 
     /**
-     * 绝区零 3.3：入口与星铁相同，先按星铁的账号模型登记（combo_widget + 账号库），
-     * 切换集合待真实登录后差分确认，未验证前只允许拍摄。
+     * 绝区零 3.3：同样没有 combo_widget，账号行在 PORTE_ACCOUNT_PRODUCT.db、token 在 token prefs，
+     * 因此与原神共用一套识别逻辑；切换集合待真机双向验证。
      */
     static final GameProfile ZZZ = new GameProfile(
             "绝区零", "com.miHoYo.Nap",
@@ -105,7 +105,6 @@ final class GameProfile {
                     "shared_prefs/porte_sdk_account_PRODUCT.xml",
                     "shared_prefs/porte_sdk_token_PRODUCT.xml",
                     "shared_prefs/mihoyo_sdk_preference.xml",
-                    "shared_prefs/combo_widget.xml",
                     "shared_prefs/mhy_plat_porte_crypto.xml",
                     "shared_prefs/mdk_passport_sp.xml",
                     "shared_prefs/com.miHoYo.Nap.v2.playerprefs.xml",
@@ -116,14 +115,13 @@ final class GameProfile {
             Arrays.asList(
                     "shared_prefs/porte_sdk_token_PRODUCT.xml",
                     "shared_prefs/mihoyo_sdk_preference.xml",
-                    "shared_prefs/combo_widget.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db"),
             true,
             false,
             "shared_prefs/porte_sdk_account_PRODUCT.xml",
-            "shared_prefs/combo_widget.xml",
             null,
-            null);
+            "shared_prefs/porte_sdk_token_PRODUCT.xml",
+            "databases/PORTE_ACCOUNT_PRODUCT.db");
 
     static final List<GameProfile> ALL = Arrays.asList(GENSHIN, STARRAIL, ZZZ);
 
