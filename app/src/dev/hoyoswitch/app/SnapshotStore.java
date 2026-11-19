@@ -379,6 +379,7 @@ final class SnapshotStore {
                 //noinspection ResultOfMethodCallIgnored
                 archived.renameTo(target.dir);
             }
+            deleteRecursively(temp);
             throw new IOException("无法替换旧快照目录: " + target.id);
         }
         try {
@@ -406,16 +407,8 @@ final class SnapshotStore {
         if (!dir.renameTo(destination)) {
             return null;
         }
-        File[] versions = history.listFiles();
-        if (versions == null || versions.length <= HISTORY_KEEP) {
-            return destination;
-        }
-        Arrays.sort(versions, (left, right) -> Long.compare(right.lastModified(), left.lastModified()));
-        for (int index = HISTORY_KEEP; index < versions.length; index++) {
-            if (!versions[index].equals(destination) && !versions[index].equals(keep)) {
-                deleteRecursively(versions[index]);
-            }
-        }
+        // Keep three versions per snapshot; the folder is shared by every account.
+        pruneHistory(history, dir.getName(), keep);
         return destination;
     }
 
@@ -525,26 +518,34 @@ final class SnapshotStore {
         if (!duplicate.dir.renameTo(destination)) {
             return false;
         }
-        pruneHistory(historyDir, primary.id);
+        pruneHistory(historyDir, primary.id, null);
         return true;
     }
 
-    private void pruneHistory(File historyDir, String id) {
+    /** Keeps the newest versions of one snapshot, always sparing {@code keep}. */
+    private void pruneHistory(File historyDir, String id, File keep) {
         File[] versions = historyDir.listFiles();
         if (versions == null) {
             return;
         }
         List<File> mine = new ArrayList<>();
+        boolean keepPresent = false;
         for (File version : versions) {
-            if (version.getName().startsWith(id + "-")) {
+            if (!version.getName().startsWith(id + "-")) {
+                continue;
+            }
+            if (version.equals(keep)) {
+                keepPresent = true;
+            } else {
                 mine.add(version);
             }
         }
-        if (mine.size() <= HISTORY_KEEP) {
+        int allowed = keepPresent ? HISTORY_KEEP - 1 : HISTORY_KEEP;
+        if (mine.size() <= allowed) {
             return;
         }
         mine.sort((left, right) -> Long.compare(right.lastModified(), left.lastModified()));
-        for (int index = HISTORY_KEEP; index < mine.size(); index++) {
+        for (int index = allowed; index < mine.size(); index++) {
             deleteRecursively(mine.get(index));
         }
     }
