@@ -261,3 +261,5 @@
 - 补充（23:36–23:40）：正式包真机覆盖验证（用户已卸载旧版）。安装 ccount-switch-release.apk 后：版本 1.1.0、名称「米游账号切换」；un-as 报 package not debuggable；带 --es selftest cardops 启动不产生任何自检日志与快照（发布包忽略自检参数）；星铁分栏拍摄成功（846ms，10/10），卡片显示当前登录，载荷为 HSN1 加密文件。数据已随卸载清空，需重新登录各游戏拍摄。
 
 - 补充（23:39–23:44）：复核 1.1.0 审查修复时发现三处同类残留，发布 1.1.1。① eadDevice 改为 [ -e ] && cat：退出码 3 才是缺失，其他读取失败抛错（原先把权限/IO 错误当空内容）；② estoreHistory 纳入进程级 LOCK，rchive() 失败时中止回滚；③ 回滚后同步 snapshot.entries，避免之后重命名写回旧哈希。验证：调试包 CARDOPS PASS；正式包 1.1.1 安装后 un-as 被拒、拍摄 833ms 成功。
+
+- 补充（23:47–00:00）：按第二轮审查修复 12 项，发布 1.2.0。P1：① 新增 updateCurrentAccount/updateAccountIfCurrent，识别与更新同锁；② ename/setCredentials/切换收尾改为磁盘重读后再写，旧对象不再覆盖新哈希；③ stableRead 持续不一致时抛错，不再保存混合状态；④ 账号库改用 SQLite 查询最新行（临时库文件 + 只读打开），删除残留不会被误判；⑤ 切换时同步 DB 的 journal/WAL/SHM，目标没有就删除；⑥ 必要文件缺失直接拒绝切换。P2：⑦ 回滚删除检查退出码并确认消失；⑧ 加密载荷长度校验；⑨ RootShell stdin 写入移到线程，超时覆盖写；⑩ 内容一致也恢复属主/权限/上下文；⑪ login_state.py 恢复命令参数顺序；⑫ uild.py 先清空 uild/res。单测 23 个通过。注：重装正式包后 Root 授权丢失，真机验证待用户重新授权。

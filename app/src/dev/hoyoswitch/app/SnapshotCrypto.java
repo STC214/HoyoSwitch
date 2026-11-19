@@ -60,6 +60,9 @@ final class SnapshotCrypto {
         if (!isEncrypted(data)) {
             throw new IOException("不是加密的快照数据");
         }
+        if (data.length < MAGIC.length + IV_BYTES + TAG_BITS / 8) {
+            throw new IOException("加密快照数据被截断");
+        }
         byte[] iv = new byte[IV_BYTES];
         System.arraycopy(data, MAGIC.length, iv, 0, IV_BYTES);
         try {

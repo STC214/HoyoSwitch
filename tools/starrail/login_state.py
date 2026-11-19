@@ -95,7 +95,7 @@ def backup(record, path, original, before, after_value, device):
         value_after=after_value,
         sha256_before=digest(original),
         size_before=len(original),
-        restore_command=f'python tools/starrail/login_state.py restore --serial {device.serial} --record "{record}" --apply',
+        restore_command=f'python tools/starrail/login_state.py --serial {device.serial} restore --record "{record}" --apply',
     )
     (record / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return meta

@@ -60,7 +60,9 @@ def main():
     res = OUTPUT / 'res'
     source_res = HERE / 'res'
     if source_res.is_dir():
-        shutil.copytree(source_res, res, dirs_exist_ok=True)
+        if res.exists():
+            shutil.rmtree(res)
+        shutil.copytree(source_res, res)
     drawable = res / 'drawable-nodpi'
     drawable.mkdir(parents=True, exist_ok=True)
     icon = HERE.parent / '0i.png'

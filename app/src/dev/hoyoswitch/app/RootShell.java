@@ -132,12 +132,18 @@ final class RootShell {
         errThread.start();
         try {
             if (input != null) {
-                try (OutputStream stdin = process.getOutputStream()) {
-                    stdin.write(input);
-                    stdin.flush();
-                } catch (IOException ignored) {
-                    // The command may have exited before reading stdin; the exit code reports it.
-                }
+                // Write stdin on its own thread: a child that never reads would otherwise block
+                // this thread before the timeout below can ever run.
+                Thread writer = new Thread(() -> {
+                    try (OutputStream stdin = process.getOutputStream()) {
+                        stdin.write(input);
+                        stdin.flush();
+                    } catch (IOException ignored) {
+                        // The command may have exited before reading stdin; exit code reports it.
+                    }
+                }, "rootshell-in");
+                writer.setDaemon(true);
+                writer.start();
             } else {
                 process.getOutputStream().close();
             }

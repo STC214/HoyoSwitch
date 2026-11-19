@@ -196,6 +196,13 @@ def restore(device, record, apply, only=()):
         data = local_path(record, rel).read_bytes()
         info = device.info(path)
         if info is not None and digest(device.read(path)) == entry['sha256']:
+            if stable(info) != stable(entry):
+                device.set_metadata(path, entry['uid'], entry['gid'], entry['mode'], entry['context'])
+                if stable(device.info(path)) != stable(entry):
+                    print(f'{rel}: could not restore owner/mode/context; safety snapshot {safety}',
+                          file=sys.stderr)
+                    return 1
+                print(f'{rel}: owner/mode/context restored')
             skipped += 1
             continue
         device.write(path, data)
@@ -214,6 +221,21 @@ def restore(device, record, apply, only=()):
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     leftover = show(rows)
+    present = {entry['path'] for entry in manifest['files'] if entry['present']}
+    stale = []
+    for rel in present:
+        if not rel.endswith('.db'):
+            continue
+        for suffix in ('-journal', '-wal', '-shm'):
+            side = rel + suffix
+            if side in present:
+                continue
+            if device.info(f'{DATA_DIR}/{side}') is not None:
+                stale.append(side)
+    if stale:
+        print('stale database sidecars remain: ' + ', '.join(sorted(stale)), file=sys.stderr)
+        print('remove them manually before starting the game', file=sys.stderr)
+        return 1
     print(f'written={written} skipped={skipped} safety_snapshot={safety} '
           f'scope={"selected" if only else "all"}')
     if leftover:

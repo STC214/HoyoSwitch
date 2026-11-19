@@ -90,5 +90,24 @@ class SafetyTest(unittest.TestCase):
         self.assertEqual(writes, [(b'new', 'false'), (BASIC, 'true')])
 
 
+class BackupTest(unittest.TestCase):
+    def test_restore_command_puts_serial_before_subcommand(self):
+        import tempfile
+        from pathlib import Path
+
+        class FakeDevice:
+            serial = 'SERIAL123'
+
+            def info(self, path):
+                return {'uid': '1000', 'gid': '1000', 'mode': '660',
+                        'context': 'u:object_r:x:s0'}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = login_state.backup(Path(tmp) / 'rec', login_state.PORTE_PREFS,
+                                      BASIC, 'true', 'false', FakeDevice())
+        parts = meta['restore_command'].split()
+        self.assertLess(parts.index('--serial'), parts.index('restore'))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,8 @@
 package dev.hoyoswitch.app;
 
 import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.util.Base64;
 import android.util.Log;
 import android.util.Xml;
@@ -18,6 +20,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
@@ -87,8 +90,10 @@ final class SnapshotStore {
     static volatile int failAfterWrites = -1;
 
     private final File root;
+    private final Context context;
 
     SnapshotStore(Context context) {
+        this.context = context;
         root = new File(context.getFilesDir(), "snapshots");
         migrateLegacyLayout();
     }
@@ -293,8 +298,8 @@ final class SnapshotStore {
             }
             candidate = again.out;
         }
-        Log.i("hoyoswitch", "unstable read while game running: " + path);
-        return candidate;
+        Log.w("hoyoswitch", "unstable read while game running: " + path);
+        throw new IOException("文件在拍摄期间持续变化，请停止游戏后重试: " + path);
     }
 
     List<Snapshot> list(GameProfile game) {
@@ -349,9 +354,11 @@ final class SnapshotStore {
         }
         // Games without a combo widget identify the account from the token prefs key.
         if (game.accountDb != null) {
-            byte[] db = readDevice(game.path(game.accountDb));
+            String dbPath = game.path(game.accountDb);
+            byte[] db = readDevice(dbPath);
             if (db != null) {
-                String mid = dbCurrentMid(db);
+                String mid = dbCurrentMid(db, readDevice(dbPath + "-journal"),
+                        readDevice(dbPath + "-wal"), readDevice(dbPath + "-shm"));
                 if (!mid.isEmpty()) {
                     current.loggedIn = true;
                     current.mid = mid;
@@ -410,7 +417,10 @@ final class SnapshotStore {
         GameProfile game = snapshot.game;
         if (game.accountDb != null) {
             try {
-                String mid = dbCurrentMid(readSnapshot(snapshot, game.accountDb));
+                String mid = dbCurrentMid(readSnapshot(snapshot, game.accountDb),
+                        snapshotBytes(snapshot, game.accountDb + "-journal"),
+                        snapshotBytes(snapshot, game.accountDb + "-wal"),
+                        snapshotBytes(snapshot, game.accountDb + "-shm"));
                 if (!mid.isEmpty()) {
                     return mid;
                 }
@@ -445,7 +455,53 @@ final class SnapshotStore {
     private static final Pattern ACCOUNT_ROW =
             Pattern.compile("([0-9a-z_]+_mhy)(\\d+)(\\d{13})");
 
-    private static String dbCurrentMid(byte[] db) {
+    /**
+     * Reads the newest row with a real SQLite query so deleted rows in freelist pages cannot be
+     * mistaken for the current account. Falls back to a byte scan only if SQLite cannot open it.
+     */
+    private String dbCurrentMid(byte[] db) {
+        return dbCurrentMid(db, null, null, null);
+    }
+
+    private String dbCurrentMid(byte[] db, byte[] journal, byte[] wal, byte[] shm) {
+        File dir = new File(context.getCacheDir(), "dbscan-" + System.nanoTime());
+        try {
+            if (!dir.mkdirs()) {
+                return regexMid(db);
+            }
+            File main = new File(dir, "account.db");
+            Files.write(main.toPath(), db);
+            writeIfPresent(new File(dir, "account.db-journal"), journal);
+            writeIfPresent(new File(dir, "account.db-wal"), wal);
+            writeIfPresent(new File(dir, "account.db-shm"), shm);
+            SQLiteDatabase database = SQLiteDatabase.openDatabase(main.getPath(), null,
+                    SQLiteDatabase.OPEN_READONLY);
+            try (Cursor cursor = database.rawQuery(
+                    "SELECT mid FROM porte_account_table ORDER BY timestamp DESC LIMIT 1", null)) {
+                if (cursor.moveToFirst()) {
+                    String mid = cursor.getString(0);
+                    if (mid != null && !mid.isEmpty()) {
+                        return mid;
+                    }
+                }
+            } finally {
+                database.close();
+            }
+        } catch (Exception error) {
+            Log.w("hoyoswitch", "sqlite account scan failed: " + error);
+        } finally {
+            deleteRecursively(dir);
+        }
+        return regexMid(db);
+    }
+
+    private static void writeIfPresent(File file, byte[] data) throws IOException {
+        if (data != null) {
+            Files.write(file.toPath(), data);
+        }
+    }
+
+    private static String regexMid(byte[] db) {
         String text = new String(db, StandardCharsets.ISO_8859_1);
         Matcher matcher = ACCOUNT_ROW.matcher(text);
         String bestMid = "";
@@ -462,6 +518,18 @@ final class SnapshotStore {
             }
         }
         return bestMid;
+    }
+
+    private byte[] snapshotBytes(Snapshot snapshot, String relative) {
+        Entry entry = snapshot.entry(relative);
+        if (entry == null || !entry.present) {
+            return null;
+        }
+        try {
+            return readSnapshot(snapshot, relative);
+        } catch (IOException error) {
+            return null;
+        }
     }
 
     /** Genshin stores one token per account under {@code <mid>_mhy_porte_cookie_token_key}. */
@@ -740,11 +808,33 @@ final class SnapshotStore {
     }
 
     private void renameLocked(Snapshot snapshot, String name) throws IOException {
-        snapshot.name = name.trim();
-        if (snapshot.name.isEmpty()) {
+        String cleaned = name == null ? "" : name.trim();
+        if (cleaned.isEmpty()) {
             throw new IOException("名称不能为空");
         }
-        saveManifest(snapshot);
+        Snapshot fresh = reload(snapshot);
+        fresh.name = cleaned;
+        saveManifest(fresh);
+        adopt(snapshot, fresh);
+    }
+
+    /** Reads the manifest from disk so a stale in-memory object cannot overwrite newer data. */
+    private Snapshot reload(Snapshot snapshot) throws IOException {
+        try {
+            return readManifest(snapshot.game, snapshot.dir);
+        } catch (JSONException error) {
+            throw new IOException("快照清单损坏: " + snapshot.id, error);
+        }
+    }
+
+    private static void adopt(Snapshot target, Snapshot fresh) {
+        target.name = fresh.name;
+        target.createdAt = fresh.createdAt;
+        target.lastUsedAt = fresh.lastUsedAt;
+        target.loginName = fresh.loginName;
+        target.passwordEnc = fresh.passwordEnc;
+        target.entries.clear();
+        target.entries.putAll(fresh.entries);
     }
 
     /** Stores the card's account name and password; the password is Keystore-encrypted. */
@@ -756,15 +846,17 @@ final class SnapshotStore {
 
     private void setCredentialsLocked(Snapshot snapshot, String loginName, String password)
             throws IOException {
-        snapshot.loginName = loginName == null ? "" : loginName.trim();
+        Snapshot fresh = reload(snapshot);
+        fresh.loginName = loginName == null ? "" : loginName.trim();
         if (password == null || password.isEmpty()) {
-            snapshot.passwordEnc = "";
+            fresh.passwordEnc = "";
         } else {
-            snapshot.passwordEnc = Base64.encodeToString(
+            fresh.passwordEnc = Base64.encodeToString(
                     SnapshotCrypto.encrypt(password.getBytes(StandardCharsets.UTF_8)),
                     Base64.NO_WRAP);
         }
-        saveManifest(snapshot);
+        saveManifest(fresh);
+        adopt(snapshot, fresh);
     }
 
     /** Decrypts the stored password; empty when none was saved. */
@@ -883,6 +975,43 @@ final class SnapshotStore {
         }
     }
 
+    /** Detects the current account and refreshes its card in one locked transaction. */
+    String updateCurrentAccount(GameProfile game) throws IOException {
+        synchronized (LOCK) {
+            Current current = detectCurrentLocked(game);
+            if (!current.loggedIn) {
+                throw new IOException("当前未登录，没有可更新的账号快照");
+            }
+            if (current.mid.isEmpty()) {
+                throw new IOException("读不到当前账号标识，无法确认是哪个快照");
+            }
+            Snapshot matched = findByAccount(game, current.mid);
+            if (matched == null) {
+                throw new IOException("当前账号不在" + game.label + "的任何快照中，请先拍一张快照");
+            }
+            return updateSnapshotLocked(matched);
+        }
+    }
+
+    /** Refreshes one card only when that same account is still logged in (atomic check+write). */
+    String updateAccountIfCurrent(Snapshot target) throws IOException {
+        synchronized (LOCK) {
+            GameProfile game = target.game;
+            Current current = detectCurrentLocked(game);
+            if (!current.loggedIn) {
+                throw new IOException("当前未登录，无法更新该快照");
+            }
+            if (current.mid.isEmpty()) {
+                throw new IOException("读不到当前账号标识，无法确认就是这个账号");
+            }
+            adopt(target, reload(target));
+            if (!current.mid.equals(accountMid(target))) {
+                throw new IOException("当前登录的不是这个账号，未更新快照");
+            }
+            return updateSnapshotLocked(target);
+        }
+    }
+
     /** True when the payloads can actually be decrypted with the current Keystore key. */
     boolean decryptable(Snapshot snapshot) {
         for (String relative : snapshot.game.files) {
@@ -934,11 +1063,15 @@ final class SnapshotStore {
             return;
         }
         try {
+            // A partial snapshot must never be applied: all switch files have to be present.
             for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
                 if (entry == null || !entry.present) {
-                    continue;
+                    throw new IOException("目标快照缺少必要文件: " + relative);
                 }
+            }
+            for (String relative : game.switchFiles) {
+                Entry entry = target.entry(relative);
                 byte[] data = readSnapshot(target, relative);
                 if (!sha256(data).equals(entry.sha256)) {
                     throw new IOException("快照文件已损坏: " + relative);
@@ -946,18 +1079,20 @@ final class SnapshotStore {
                 String path = game.path(relative);
                 byte[] current = readDevice(path);
                 if (current != null && sha256(current).equals(entry.sha256)) {
+                    ensureMetadata(path, entry);
                     progress.report("跳过（已一致）: " + relative);
-                    continue;
+                } else {
+                    writeDevice(path, data);
+                    verifyWritten(path, entry);
+                    ensureMetadata(path, entry);
+                    progress.report("已写入并校验: " + relative);
                 }
-                writeDevice(path, data);
-                verifyWritten(path, entry);
-                progress.report("已写入并校验: " + relative);
+                if (relative.endsWith(".db")) {
+                    switchSidecars(target, relative, progress);
+                }
             }
             for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
-                if (entry == null || !entry.present) {
-                    continue;
-                }
                 byte[] current = readDevice(game.path(relative));
                 if (current == null || !sha256(current).equals(entry.sha256)) {
                     throw new IOException("切换后校验失败: " + relative);
@@ -966,7 +1101,10 @@ final class SnapshotStore {
             progress.report("切换完成，所有文件校验一致");
             target.lastUsedAt = System.currentTimeMillis();
             try {
-                saveManifest(target);
+                Snapshot fresh = reload(target);
+                fresh.lastUsedAt = target.lastUsedAt;
+                saveManifest(fresh);
+                adopt(target, fresh);
             } catch (IOException ignored) {
                 // The switch already succeeded; a stale timestamp is cosmetic.
             }
@@ -988,6 +1126,69 @@ final class SnapshotStore {
         }
     }
 
+    /** Keeps SQLite main file and its journal/WAL/SHM sidecars consistent with the target. */
+    private void switchSidecars(Snapshot target, String dbRelative, Progress progress)
+            throws IOException {
+        GameProfile game = target.game;
+        for (String suffix : new String[]{"-journal", "-wal", "-shm"}) {
+            String relative = dbRelative + suffix;
+            Entry entry = target.entry(relative);
+            String path = game.path(relative);
+            if (entry != null && entry.present) {
+                byte[] data = readSnapshot(target, relative);
+                if (!sha256(data).equals(entry.sha256)) {
+                    throw new IOException("快照文件已损坏: " + relative);
+                }
+                writeDevice(path, data);
+                verifyWritten(path, entry);
+                progress.report("已写入并校验: " + relative);
+            } else if (exists(path)) {
+                RootShell.Result removed = RootShell.run("rm -f " + quote(path));
+                if (removed.code != 0 || exists(path)) {
+                    throw new IOException("无法移除旧边车文件: " + relative);
+                }
+                progress.report("已移除旧边车: " + relative);
+            }
+        }
+    }
+
+    private boolean exists(String path) throws IOException {
+        return RootShell.run("test -e " + quote(path)).code == 0;
+    }
+
+    /** Restores owner, mode and SELinux context when the bytes already match. */
+    private void ensureMetadata(String path, Entry entry) throws IOException {
+        Entry now = stat(path);
+        if (now == null) {
+            throw new IOException("无法读取文件属性: " + entry.path);
+        }
+        if (!entry.uid.equals(now.uid) || !entry.gid.equals(now.gid)) {
+            runChecked("chown " + entry.uid + ":" + entry.gid + " " + quote(path));
+        }
+        if (!entry.mode.equals(now.mode)) {
+            runChecked("chmod " + entry.mode + " " + quote(path));
+        }
+        if (!entry.context.isEmpty() && !entry.context.equals(now.context)) {
+            RootShell.Result result = RootShell.run(
+                    "chcon " + quote(entry.context) + " " + quote(path));
+            if (result.code != 0) {
+                Log.w("hoyoswitch", "chcon failed for " + path + ": " + result.err);
+            }
+        }
+        Entry after = stat(path);
+        if (after == null || !entry.uid.equals(after.uid) || !entry.gid.equals(after.gid)
+                || !entry.mode.equals(after.mode)) {
+            throw new IOException("无法恢复文件属性: " + entry.path);
+        }
+    }
+
+    private static void runChecked(String command) throws IOException {
+        RootShell.Result result = RootShell.run(command);
+        if (result.code != 0) {
+            throw new IOException("命令失败(" + result.code + "): " + command + " " + result.err);
+        }
+    }
+
     /** Restores every present file of {@code snapshot}; used by rollback. */
     void restoreAll(Snapshot snapshot, Progress progress) throws IOException {
         synchronized (LOCK) {
@@ -1005,14 +1206,18 @@ final class SnapshotStore {
             String path = game.path(entry.path);
             if (!entry.present) {
                 // Restore the captured state exactly: a file created after the snapshot must go.
-                if (RootShell.run("test -e " + quote(path)).code == 0) {
-                    RootShell.run("rm -f " + quote(path));
+                if (exists(path)) {
+                    RootShell.Result removed = RootShell.run("rm -f " + quote(path));
+                    if (removed.code != 0 || exists(path)) {
+                        throw new IOException("无法移除多余文件: " + entry.path);
+                    }
                     progress.report("已移除多余文件: " + entry.path);
                 }
                 continue;
             }
             byte[] current = readDevice(path);
             if (current != null && sha256(current).equals(entry.sha256)) {
+                ensureMetadata(path, entry);
                 continue;
             }
             byte[] data = readSnapshot(snapshot, entry.path);
@@ -1021,6 +1226,7 @@ final class SnapshotStore {
             }
             writeDevice(path, data);
             verifyWritten(path, entry);
+            ensureMetadata(path, entry);
             progress.report("已恢复: " + entry.path);
         }
     }
