@@ -39,7 +39,7 @@
 - **未适配分栏**：原神（`com.miHoYo.Yuanshen`）与绝区零（`com.miHoYo.Nap`）只登记包名与入口，文件清单未调研，分栏内显示「尚未适配」，拍摄与切换按钮禁用。
 - **启动游戏一律用命令**：App 内经 `am start -W -n <包名>/<入口>` 拉起；测试脚本同样只用命令行启动游戏，不模拟点击桌面图标，避免焦点不明时误触其他应用的图标。
 - **快照加密**：payload 使用 Android Keystore 里的 AES-256-GCM 密钥（别名 `hoyoswitch-snapshot-v1`），存为 `<相对路径>.enc`，内容为 `HSN1` 魔数 + 12 字节 IV + 密文；清单只保存明文 SHA-256，不含密钥。旧版明文快照仍可读取，下一次更新时才写成加密格式。
-- **历史版本**：更新快照前先把旧目录移入 `files/snapshots/<包名>/.history/<id>-<时间戳>`，最多保留最近 3 份；卡片菜单可回滚到任一归档版本，回滚前会把当前版本再归档一次。
+- **历史版本**：更新快照前先把旧目录移入 `files/snapshots/<包名>/.history/<id>-<时间戳>`，**按快照 id 各自保留最近 3 份**（`.history` 由所有账号共用，不能按全局裁剪）；卡片菜单可回滚到任一归档版本，回滚前会把当前版本再归档一次，回滚后保留卡片当前的 id 与名称，只把内容与时间换成历史版本。
 - **构建**：沿用无 Gradle 流程，`python .\app\build.py` 调用 aapt2 → javac → d8 → zipalign → apksigner，产物 `app/build/account-switch.apk`，本地调试密钥 `app/build/local-test.p12`（均被 Git 忽略）。
 
 ## 3. 目录

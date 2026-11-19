@@ -610,6 +610,7 @@ final class SnapshotStore {
 
     /** Rolls a snapshot back to one archived version; the current version is archived first. */
     void restoreHistory(Snapshot snapshot, HistoryEntry entry) throws IOException {
+        String currentName = snapshot.name;
         File archived = archive(snapshot.dir, entry.dir);
         if (!entry.dir.renameTo(snapshot.dir)) {
             if (archived != null) {
@@ -617,6 +618,16 @@ final class SnapshotStore {
                 archived.renameTo(snapshot.dir);
             }
             throw new IOException("无法回滚到该历史版本");
+        }
+        try {
+            Snapshot restored = readManifest(snapshot.game, snapshot.dir);
+            restored.id = snapshot.id;
+            restored.name = currentName;
+            saveManifest(restored);
+            snapshot.name = currentName;
+            snapshot.createdAt = restored.createdAt;
+        } catch (JSONException error) {
+            throw new IOException("回滚后的快照清单损坏", error);
         }
     }
 
