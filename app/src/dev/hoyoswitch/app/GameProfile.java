@@ -117,7 +117,7 @@ final class GameProfile {
                     "shared_prefs/mihoyo_sdk_preference.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db"),
             true,
-            false,
+            true,
             "shared_prefs/porte_sdk_account_PRODUCT.xml",
             null,
             "shared_prefs/porte_sdk_token_PRODUCT.xml",
