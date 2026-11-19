@@ -1,6 +1,46 @@
+# Build outputs
+/app/build/
+/prototype/build/
+*.apk
+*.aab
+*.idsig
+*.dex
+*.class
+*.zip
+
+# Keys and secrets (never commit signing material)
+/app/keystore/
+*.p12
+*.jks
+*.keystore
+*.enc
+
+# Local game clients and captured snapshots
 /game-clients/
 /account-snapshots/
-/app/build/
+
+# Python
 __pycache__/
 *.pyc
-/app/keystore/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS / tooling leftovers
+.idea/
+*.iml
+.gradle/
+local.properties
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+androguard.db*
+.vscode/
+*.swp
