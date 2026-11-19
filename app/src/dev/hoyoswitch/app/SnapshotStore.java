@@ -337,6 +337,12 @@ final class SnapshotStore {
      * rewrites token, SDK prefs and the database timestamp on every launch.
      */
     Current detectCurrent(GameProfile game) throws IOException {
+        synchronized (LOCK) {
+            return detectCurrentLocked(game);
+        }
+    }
+
+    private Current detectCurrentLocked(GameProfile game) throws IOException {
         Current current = new Current();
         if (!game.supported) {
             return current;
@@ -797,13 +803,20 @@ final class SnapshotStore {
 
     /** Rolls a snapshot back to one archived version; the current version is archived first. */
     void restoreHistory(Snapshot snapshot, HistoryEntry entry) throws IOException {
+        synchronized (LOCK) {
+            restoreHistoryLocked(snapshot, entry);
+        }
+    }
+
+    private void restoreHistoryLocked(Snapshot snapshot, HistoryEntry entry) throws IOException {
         String currentName = snapshot.name;
         File archived = archive(snapshot.dir, entry.dir);
+        if (archived == null) {
+            throw new IOException("无法归档当前版本，已中止回滚");
+        }
         if (!entry.dir.renameTo(snapshot.dir)) {
-            if (archived != null) {
-                //noinspection ResultOfMethodCallIgnored
-                archived.renameTo(snapshot.dir);
-            }
+            //noinspection ResultOfMethodCallIgnored
+            archived.renameTo(snapshot.dir);
             throw new IOException("无法回滚到该历史版本");
         }
         try {
@@ -814,6 +827,9 @@ final class SnapshotStore {
             restored.loginName = snapshot.loginName;
             restored.passwordEnc = snapshot.passwordEnc;
             saveManifest(restored);
+            // Keep the caller's object in sync; a later rename() must write the restored hashes.
+            snapshot.entries.clear();
+            snapshot.entries.putAll(restored.entries);
             snapshot.name = currentName;
             snapshot.createdAt = restored.createdAt;
         } catch (JSONException error) {
@@ -1080,8 +1096,15 @@ final class SnapshotStore {
     }
 
     private byte[] readDevice(String path) throws IOException {
-        RootShell.Result result = RootShell.run("cat " + quote(path));
-        return result.code == 0 ? result.out : null;
+        RootShell.Result result = RootShell.run(
+                "if [ -e " + quote(path) + " ]; then cat " + quote(path) + "; else exit 3; fi");
+        if (result.code == 3) {
+            return null;
+        }
+        if (result.code != 0) {
+            throw new IOException("读取失败(" + result.code + "): " + path);
+        }
+        return result.out;
     }
 
     /** Exposed for the on-device self test, which compares device bytes with a snapshot. */

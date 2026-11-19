@@ -259,3 +259,5 @@
 - 补充（23:25–23:40）：按审查报告修复 8 项 P1 与 2 项 P2，发布 1.1.0，应用名改为「米游账号切换」。P1：① 带名称重复拍摄时先更新内存对象再 rename，清单不再写回旧哈希；② rchive() 返回空时中止更新，不再删原快照；③ 读取用 [ -e ] && cat，退出码 3 才算缺失，其他失败抛错；④ estoreAll 删除快照中 present=false 的多余文件；⑤ SnapshotCrypto.key() 加锁并缓存，避免并行拍摄重复建钥；⑥ 快照写操作统一走进程级 SnapshotStore.LOCK；⑦ 发布包忽略 selftest 附加参数；⑧ --release 生成 debuggable=false 的清单。P2：login_state.py 补 PACKAGE、校验异常也回滚，并新增 2 个回归测试（22 个全部通过）。真机验证：CARDOPS PASS、SELFTEST PASS；带名称拍摄后清单 sha256 与设备文件一致。
 
 - 补充（23:36–23:40）：正式包真机覆盖验证（用户已卸载旧版）。安装 ccount-switch-release.apk 后：版本 1.1.0、名称「米游账号切换」；un-as 报 package not debuggable；带 --es selftest cardops 启动不产生任何自检日志与快照（发布包忽略自检参数）；星铁分栏拍摄成功（846ms，10/10），卡片显示当前登录，载荷为 HSN1 加密文件。数据已随卸载清空，需重新登录各游戏拍摄。
+
+- 补充（23:39–23:44）：复核 1.1.0 审查修复时发现三处同类残留，发布 1.1.1。① eadDevice 改为 [ -e ] && cat：退出码 3 才是缺失，其他读取失败抛错（原先把权限/IO 错误当空内容）；② estoreHistory 纳入进程级 LOCK，rchive() 失败时中止回滚；③ 回滚后同步 snapshot.entries，避免之后重命名写回旧哈希。验证：调试包 CARDOPS PASS；正式包 1.1.1 安装后 un-as 被拒、拍摄 833ms 成功。
