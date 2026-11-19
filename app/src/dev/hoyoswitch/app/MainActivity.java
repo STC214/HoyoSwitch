@@ -7,6 +7,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.BitmapFactory;
@@ -62,6 +63,9 @@ public final class MainActivity extends Activity {
     private Button captureButton;
     private Button launchButton;
     private TextView logToggle;
+    private static final String PREFS_NAME = "ui";
+    private static final String PREF_GAME = "game";
+
     private int refreshGeneration;
     private ScrollView pageScroll;
     private ScrollView columnScroll;
@@ -71,10 +75,14 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // Start on the tab the app was closed on; self tests then run against that game.
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        game = GameProfile.byPackage(prefs.getString(PREF_GAME, GameProfile.STARRAIL.pkg));
         store = new SnapshotStore(this);
         setContentView(buildLayout());
         if (state != null) {
-            game = GameProfile.byPackage(state.getString("ui.game", GameProfile.STARRAIL.pkg));
+            game = GameProfile.byPackage(state.getString("ui.game", game.pkg));
+            saveGame();
             String log = state.getString("ui.log", "");
             if (logView != null && !log.isEmpty()) {
                 logView.setText(log);
@@ -232,6 +240,12 @@ public final class MainActivity extends Activity {
         }
         out.putBoolean("ui.logVisible",
                 logScroll != null && logScroll.getVisibility() == View.VISIBLE);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        saveGame();
     }
 
     @Override
@@ -613,8 +627,14 @@ public final class MainActivity extends Activity {
             return;
         }
         game = profile;
+        saveGame();
         appendLog("切换到分栏：" + profile.label);
         refresh();
+    }
+
+    private void saveGame() {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(PREF_GAME, game.pkg).apply();
     }
 
     private void refresh() {
