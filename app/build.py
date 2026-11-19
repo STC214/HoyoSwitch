@@ -21,6 +21,14 @@ def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
 
+def cleanup(*paths):
+    for path in paths:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def release_credentials():
     """Returns (keystore, alias, password), creating a release key on first use."""
     RELEASE.mkdir(parents=True, exist_ok=True)
@@ -93,19 +101,19 @@ def main():
     if release:
         keystore, alias, password = release_credentials()
         run(*signer, 'sign', '--ks', keystore, '--ks-key-alias', alias, '--ks-pass',
-            f'pass:{password}', '--out', apk, aligned)
+            f'pass:{password}', '--v4-signing-enabled', 'false', '--out', apk, aligned)
         run(*signer, 'verify', '--verbose', '--print-certs', apk)
-        shutil.copyfile(apk, RELEASE / apk.name)
+        cleanup(flat, unsigned, aligned)
         print(f'Release APK built: {apk}', flush=True)
-        print(f'Backup copy: {RELEASE / apk.name}', flush=True)
         return
     if not key.exists():
         run('keytool', '-genkeypair', '-storetype', 'PKCS12', '-keystore', key, '-storepass',
             'android', '-alias', 'local', '-keyalg', 'RSA', '-keysize', '2048', '-validity',
             '3650', '-dname', 'CN=Local Prototype')
     run(*signer, 'sign', '--ks', key, '--ks-key-alias', 'local', '--ks-pass', 'pass:android',
-        '--out', apk, aligned)
+        '--v4-signing-enabled', 'false', '--out', apk, aligned)
     run(*signer, 'verify', '--verbose', apk)
+    cleanup(flat, unsigned, aligned)
     print(f'APK built: {apk}', flush=True)
 
 

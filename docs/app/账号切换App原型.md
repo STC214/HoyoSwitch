@@ -45,7 +45,7 @@
 - **构建**：沿用无 Gradle 流程，`python .\app\build.py` 调用 aapt2 → javac → d8 → zipalign → apksigner，产物 `app/build/account-switch.apk`，本地调试密钥 `app/build/local-test.p12`（均被 Git 忽略）。
 - **签名与发布**：
   - 调试构建：`python .\app\build.py`，用 `app/build/local-test.p12`（CN=Local Prototype）签名，产物 `app/build/account-switch.apk`。
-  - 正式构建：`python .\app\build.py --release`，首次运行会生成 RSA-4096/10000 天的正式密钥 `app/build/release/hoyoswitch-release.p12`，随机口令写在同目录 `keystore.txt`，产物 `app/build/account-switch-release.apk`（同时复制到 `app/build/release/`）。证书 SHA-256：`81a5fc64529c23f1eef5a9de9cf32d6f6d71684aaf655c33f0adae36f59f9079`。
+  - 正式构建：`python .\app\build.py --release`，首次运行会生成 RSA-4096/10000 天的正式密钥 `app/build/release/hoyoswitch-release.p12`，随机口令写在同目录 `keystore.txt`，产物只有一份 `app/build/account-switch-release.apk`（不再生成副本）。证书 SHA-256：`81a5fc64529c23f1eef5a9de9cf32d6f6d71684aaf655c33f0adae36f59f9079`。
   - 密钥已备份到 `%USERPROFILE%\HoyoSwitch-release\`，**必须妥善保存**：丢失后无法再对已安装版本做升级（签名不一致）。
   - 注意：正式包与调试包签名不同，`adb install -r` 会失败；必须卸载旧版再装。卸载会同时删除 App 数据与快照加密用的 Keystore 密钥，**已有快照将无法解密**，需要重新登录并拍摄。
 

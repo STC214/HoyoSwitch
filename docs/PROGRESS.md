@@ -47,6 +47,8 @@
 - 补充（22:29–22:33）：记住上次分栏并发布 0.15.1。分栏选择写入 `SharedPreferences("ui").game`（`onPause` 与切栏时保存），启动时在 `setContentView` 之前恢复，`--es selftest` 也随之在最后使用的分栏上跑。真机验证：切到原神 → `am force-stop` → 重启后直接落在原神；切到绝区零 → 重启后落在绝区零。绝区零分栏补跑自检：`CARDOPS PASS`（.history 落在 `com.miHoYo.Nap`）、`SELFTEST PASS`（注入失败后回滚，卡数保持）。
 - 补充（22:35）：启动高亮修正，发布 0.15.2。恢复分栏后立刻调用 `renderTabs()`，启动 1 秒内检查 uiautomator 即可看到目标分栏 `selected=true`，不再等 `refresh()` 的异步回调；删除旋转恢复路径里重复的调用。`CARDOPS PASS`。
 - 补充（22:43–22:50）：正式签名并发布 1.0.0。`app/build.py` 新增 `--release`：首次运行生成 RSA-4096、有效期 10000 天的 `app/build/release/hoyoswitch-release.p12`，随机 storepass 写入 `keystore.txt`，产物 `account-switch-release.apk` 并用 `apksigner verify --print-certs` 打印证书；调试构建保持原样。正式证书 DN=CN=HoyoSwitch, O=STC, C=CN，SHA-256 `81a5fc64…f9079`。密钥与口令已备份到 `%USERPROFILE%\HoyoSwitch-release\`。注意正式包与调试包签名不同：要安装需先卸载，卸载会清掉 App 数据与快照加密密钥，已有快照需重新拍摄；设备当前仍保留调试包 1.0.0（versionCode 33）以便继续使用。
+- 补充（23:12）：清理重复产物。正式包之前被复制成三份（`account-switch-release.apk`、`account-switch-1.0.0-release.apk`、`app/build/release/account-switch-release.apk`），现只保留构建输出 `app/build/account-switch-release.apk` 一份；`build.py --release` 不再向 `release/` 复制 APK（该目录只放密钥与口令），并删除旧的 0.15.1/0.15.2 版本化副本。
+- 补充（23:14）：构建目录收口。签名关闭 v4（不再生成 `.idsig`），构建结束后自动删除 `res.zip`/`unsigned.apk`/`aligned.apk` 中间产物；`app/build/` 现在只剩 `account-switch.apk`（调试、手机在用）与 `account-switch-release.apk`（唯一正式包）两个 APK。
 
 ## 2026-11-19 第八轮：新数据代复验，4 文件切换可复现
 
