@@ -338,6 +338,61 @@ final class SnapshotStore {
         }
     }
 
+    static final class HistoryEntry {
+        File dir;
+        long time;
+        String label;
+    }
+
+    /** Archived versions of one snapshot, newest first. */
+    List<HistoryEntry> history(Snapshot snapshot) {
+        List<HistoryEntry> entries = new ArrayList<>();
+        File history = new File(snapshot.dir.getParentFile(), HISTORY);
+        File[] versions = history.listFiles();
+        if (versions == null) {
+            return entries;
+        }
+        String prefix = snapshot.id + "-";
+        SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
+        for (File version : versions) {
+            if (!version.isDirectory() || !version.getName().startsWith(prefix)) {
+                continue;
+            }
+            HistoryEntry entry = new HistoryEntry();
+            entry.dir = version;
+            String suffix = version.getName().substring(prefix.length());
+            try {
+                entry.time = Long.parseLong(suffix);
+            } catch (NumberFormatException error) {
+                entry.time = version.lastModified();
+            }
+            entry.label = format.format(new Date(entry.time));
+            entries.add(entry);
+        }
+        entries.sort((left, right) -> Long.compare(right.time, left.time));
+        return entries;
+    }
+
+    void rename(Snapshot snapshot, String name) throws IOException {
+        snapshot.name = name.trim();
+        if (snapshot.name.isEmpty()) {
+            throw new IOException("名称不能为空");
+        }
+        saveManifest(snapshot);
+    }
+
+    void delete(Snapshot snapshot) {
+        deleteRecursively(snapshot.dir);
+    }
+
+    /** Rolls a snapshot back to one archived version; the current version is archived first. */
+    void restoreHistory(Snapshot snapshot, HistoryEntry entry) throws IOException {
+        archive(snapshot.dir);
+        if (!entry.dir.renameTo(snapshot.dir)) {
+            throw new IOException("无法回滚到该历史版本");
+        }
+    }
+
     /** Restores the switch files of {@code target}, with safety snapshot and rollback. */
     void switchTo(Snapshot target, boolean launchAfterwards, Progress progress) throws IOException {
         GameProfile game = target.game;

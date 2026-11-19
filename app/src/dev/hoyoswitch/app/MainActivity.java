@@ -54,9 +54,57 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         store = new SnapshotStore(this);
         setContentView(buildLayout());
-        if (getIntent().getBooleanExtra("selftest", false)) {
+        String selftest = getIntent().getStringExtra("selftest");
+        if ("cardops".equals(selftest)) {
+            main.postDelayed(this::runCardOpsTest, 1200);
+        } else if (getIntent().getBooleanExtra("selftest", false)) {
             main.postDelayed(this::runSelfTest, 1500);
         }
+    }
+
+    /** Command-driven check of rename, delete and history listing; used instead of blind taps. */
+    private void runCardOpsTest() {
+        runOp("卡片操作自检", () -> {
+            GameProfile selected = game;
+            if (selected.isRunning()) {
+                selected.forceStop();
+            }
+            List<SnapshotStore.Snapshot> snapshots = store.list(selected);
+            if (snapshots.isEmpty()) {
+                throw new IOException("没有可用于自检的快照");
+            }
+            SnapshotStore.Snapshot first = snapshots.get(0);
+            String original = first.name;
+            boolean renameOk;
+            try {
+                store.rename(first, original + "-改名自检");
+                renameOk = (original + "-改名自检").equals(store.load(selected, first.id).name);
+            } finally {
+                store.rename(store.load(selected, first.id), original);
+            }
+
+            String tempId = store.capture(selected, "删除自检临时快照");
+            store.delete(store.load(selected, tempId));
+            boolean deleteOk = true;
+            for (SnapshotStore.Snapshot snapshot : store.list(selected)) {
+                if (snapshot.id.equals(tempId)) {
+                    deleteOk = false;
+                    break;
+                }
+            }
+
+            int historyCount = 0;
+            for (SnapshotStore.Snapshot snapshot : store.list(selected)) {
+                historyCount += store.history(snapshot).size();
+            }
+
+            String verdict = renameOk && deleteOk ? "PASS" : "FAIL";
+            Log.i("hoyoswitch", "CARDOPS " + verdict + " rename=" + renameOk
+                    + " delete=" + deleteOk + " history_entries=" + historyCount);
+            appendLog("卡片操作自检：" + verdict + "（重命名=" + (renameOk ? "通过" : "失败")
+                    + "，删除=" + (deleteOk ? "通过" : "失败")
+                    + "，历史版本 " + historyCount + " 个）");
+        });
     }
 
     /**
@@ -355,12 +403,81 @@ public final class MainActivity extends Activity {
             updateButton.setText("更新此快照");
             updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name,
                     () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
+            Button moreButton = new Button(this);
+            moreButton.setText("⋯");
+            moreButton.setOnClickListener(view -> showCardMenu(snapshot));
             row.addView(switchButton, weightWrap(2f));
-            row.addView(updateButton, weightWrap(1f));
+            row.addView(updateButton, weightWrap(1.6f));
+            row.addView(moreButton, weightWrap(0.6f));
             card.addView(row, matchWrap());
 
             cardList.addView(card, matchWrap());
         }
+    }
+
+    private void showCardMenu(SnapshotStore.Snapshot snapshot) {
+        String[] items = {"重命名", "删除快照", "历史版本"};
+        new AlertDialog.Builder(this)
+                .setTitle(snapshot.name)
+                .setItems(items, (dialog, which) -> {
+                    if (which == 0) {
+                        renameDialog(snapshot);
+                    } else if (which == 1) {
+                        deleteDialog(snapshot);
+                    } else {
+                        historyDialog(snapshot);
+                    }
+                })
+                .show();
+    }
+
+    private void renameDialog(SnapshotStore.Snapshot snapshot) {
+        EditText input = new EditText(this);
+        input.setText(snapshot.name);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle("重命名快照")
+                .setView(input)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> runOp("重命名",
+                        () -> store.rename(snapshot, input.getText().toString())))
+                .show();
+    }
+
+    private void deleteDialog(SnapshotStore.Snapshot snapshot) {
+        new AlertDialog.Builder(this)
+                .setTitle("删除快照")
+                .setMessage("将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> runOp("删除快照",
+                        () -> store.delete(snapshot)))
+                .show();
+    }
+
+    private void historyDialog(SnapshotStore.Snapshot snapshot) {
+        List<SnapshotStore.HistoryEntry> entries = store.history(snapshot);
+        if (entries.isEmpty()) {
+            toast("这个快照还没有历史版本");
+            return;
+        }
+        String[] labels = new String[entries.size()];
+        for (int index = 0; index < entries.size(); index++) {
+            labels[index] = entries.get(index).label;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("历史版本 · " + snapshot.name)
+                .setItems(labels, (dialog, which) -> confirmHistory(snapshot, entries.get(which)))
+                .show();
+    }
+
+    private void confirmHistory(SnapshotStore.Snapshot snapshot, SnapshotStore.HistoryEntry entry) {
+        new AlertDialog.Builder(this)
+                .setTitle("回滚到 " + entry.label)
+                .setMessage("快照内容会替换为该历史版本，当前版本先归档保留。继续？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("回滚", (dialog, which) -> runOp("回滚历史版本",
+                        () -> store.restoreHistory(snapshot, entry)))
+                .show();
     }
 
     private void confirmSwitch(SnapshotStore.Snapshot target) {
