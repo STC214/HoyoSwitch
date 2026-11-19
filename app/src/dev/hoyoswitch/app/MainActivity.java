@@ -1197,7 +1197,9 @@ public final class MainActivity extends Activity {
             try {
                 operation.run();
             } catch (Exception error) {
-                appendLog("失败：" + error.getMessage());
+                String message = error.getMessage() == null
+                        ? error.getClass().getSimpleName() : error.getMessage();
+                appendLog("失败：" + message);
             } finally {
                 busy = false;
                 refresh();

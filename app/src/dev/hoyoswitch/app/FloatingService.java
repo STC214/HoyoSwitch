@@ -61,6 +61,11 @@ public final class FloatingService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && intent.hasExtra(EXTRA_PACKAGE)) {
             game = GameProfile.byPackage(intent.getStringExtra(EXTRA_PACKAGE));
+            NotificationManager manager =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager != null) {
+                manager.notify(NOTIFICATION_ID, buildNotification());
+            }
         }
         return START_STICKY;
     }
@@ -91,13 +96,16 @@ public final class FloatingService extends Service {
                     NotificationManager.IMPORTANCE_LOW);
             manager.createNotificationChannel(channel);
         }
-        Notification notification = new Notification.Builder(this, CHANNEL)
+        startForeground(NOTIFICATION_ID, buildNotification());
+    }
+
+    private Notification buildNotification() {
+        return new Notification.Builder(this, CHANNEL)
                 .setContentTitle("账号切换 · " + game.label)
                 .setContentText("悬浮按钮已开启：切换后点它更新快照")
                 .setSmallIcon(android.R.drawable.ic_menu_save)
                 .setOngoing(true)
                 .build();
-        startForeground(NOTIFICATION_ID, notification);
     }
 
     private void addButton() {
@@ -105,10 +113,17 @@ public final class FloatingService extends Service {
         view.setText("更新快照");
         view.setTextColor(0xFFFFFFFF);
         view.setTextSize(14);
-        int pad = dp(10);
-        view.setPadding(pad, pad, pad, pad);
-        view.setBackgroundColor(0xCC333333);
-        view.setElevation(dp(4));
+        view.setTypeface(null, android.graphics.Typeface.BOLD);
+        view.setContentDescription("更新当前账号快照");
+        int padH = dp(14);
+        int padV = dp(9);
+        view.setPadding(padH, padV, padH, padV);
+        android.graphics.drawable.GradientDrawable shape =
+                new android.graphics.drawable.GradientDrawable();
+        shape.setCornerRadius(dp(24));
+        shape.setColor(0xF22F6BFF);
+        view.setBackground(shape);
+        view.setElevation(dp(6));
 
         params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -138,8 +153,7 @@ public final class FloatingService extends Service {
                         moving = true;
                     }
                     if (moving) {
-                        params.x = startX + deltaX;
-                        params.y = startY + deltaY;
+                        clampPosition(view, startX + deltaX, startY + deltaY);
                         windowManager.updateViewLayout(button, params);
                     }
                     return true;
@@ -161,6 +175,16 @@ public final class FloatingService extends Service {
             Log.i("hoyoswitch", "floating button at " + location[0] + "," + location[1]
                     + " size " + view.getWidth() + "x" + view.getHeight());
         });
+    }
+
+    /** Keeps the button fully on screen while dragging. */
+    private void clampPosition(View view, int x, int y) {
+        int width = view.getWidth() > 0 ? view.getWidth() : dp(120);
+        int height = view.getHeight() > 0 ? view.getHeight() : dp(44);
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        params.x = Math.max(0, Math.min(x, screenWidth - width));
+        params.y = Math.max(0, Math.min(y, screenHeight - height));
     }
 
     private void updateSnapshot() {
