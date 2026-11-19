@@ -309,13 +309,22 @@ final class SnapshotStore {
         if (!game.supported) {
             return current;
         }
-        String statusPath = null;
-        for (String relative : game.files) {
-            if (relative.endsWith("porte_sdk_account_PRODUCT.xml")) {
-                statusPath = relative;
-                break;
+        // Games without a combo widget identify the account from the token prefs key.
+        if (game.identityPrefs == null && game.tokenPrefs != null) {
+            byte[] token = readDevice(game.path(game.tokenPrefs));
+            if (token == null) {
+                current.note = "读不到登录状态文件";
+                return current;
             }
+            String mid = tokenMid(token);
+            if (mid.isEmpty()) {
+                return current;
+            }
+            current.loggedIn = true;
+            current.mid = mid;
+            return current;
         }
+        String statusPath = game.loginPrefs;
         if (statusPath == null) {
             return current;
         }
@@ -328,14 +337,11 @@ final class SnapshotStore {
             return current;
         }
         current.loggedIn = true;
-        for (String relative : game.files) {
-            if (relative.endsWith("combo_widget.xml")) {
-                byte[] widget = readDevice(game.path(relative));
-                String account = widget == null ? null : preferenceValue(widget, "string", "account");
-                if (account != null) {
-                    current.mid = accountField(account, "mid");
-                }
-                break;
+        if (game.identityPrefs != null) {
+            byte[] widget = readDevice(game.path(game.identityPrefs));
+            String account = widget == null ? null : preferenceValue(widget, "string", "account");
+            if (account != null) {
+                current.mid = accountField(account, "mid");
             }
         }
         if (current.mid.isEmpty()) {
@@ -344,7 +350,7 @@ final class SnapshotStore {
         return current;
     }
 
-    /** Account id stored in a snapshot's widget cache; empty when unreadable. */
+    /** Account id stored in a snapshot's widget cache or token prefs key; empty when unreadable. */
     String accountMid(Snapshot snapshot) {
         try {
             return readAccountMid(snapshot);
@@ -354,15 +360,35 @@ final class SnapshotStore {
     }
 
     private String readAccountMid(Snapshot snapshot) throws IOException {
-        for (String relative : snapshot.game.files) {
-            if (!relative.endsWith("combo_widget.xml")) {
-                continue;
-            }
-            byte[] widget = readSnapshot(snapshot, relative);
+        GameProfile game = snapshot.game;
+        if (game.tokenPrefs != null) {
+            return tokenMid(readSnapshot(snapshot, game.tokenPrefs));
+        }
+        if (game.identityPrefs != null) {
+            byte[] widget = readSnapshot(snapshot, game.identityPrefs);
             String account = preferenceValue(widget, "string", "account");
             return account == null ? "" : accountField(account, "mid");
         }
         return "";
+    }
+
+    /** Genshin stores one token per account under {@code <mid>_mhy_porte_cookie_token_key}. */
+    private static String tokenMid(byte[] xml) {
+        String text = new String(xml, StandardCharsets.UTF_8);
+        int suffix = text.indexOf("_mhy_porte_cookie_token_key");
+        if (suffix <= 0) {
+            return "";
+        }
+        int nameStart = text.lastIndexOf("name=\"", suffix);
+        if (nameStart < 0) {
+            return "";
+        }
+        String name = text.substring(nameStart + "name=\"".length(), suffix);
+        int quote = name.indexOf('"');
+        if (quote >= 0) {
+            name = name.substring(0, quote);
+        }
+        return name.trim();
     }
 
     /**
@@ -674,12 +700,22 @@ final class SnapshotStore {
 
     /** True when the payloads can actually be decrypted with the current Keystore key. */
     boolean decryptable(Snapshot snapshot) {
-        try {
-            readAccountMid(snapshot);
-            return true;
-        } catch (IOException error) {
-            return false;
+        for (String relative : snapshot.game.files) {
+            if (!relative.endsWith(".xml")) {
+                continue;
+            }
+            Entry entry = snapshot.entry(relative);
+            if (entry == null || !entry.present) {
+                continue;
+            }
+            try {
+                readSnapshot(snapshot, relative);
+                return true;
+            } catch (IOException error) {
+                return false;
+            }
         }
+        return true;
     }
 
     private Snapshot findByAccount(GameProfile game, String mid) {

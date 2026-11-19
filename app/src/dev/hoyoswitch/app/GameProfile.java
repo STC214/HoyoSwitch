@@ -14,15 +14,25 @@ final class GameProfile {
     final List<String> files;
     final List<String> switchFiles;
     final boolean supported;
+    /** Prefs file holding {@code login_status}; null when the game does not use it. */
+    final String loginPrefs;
+    /** Prefs file holding the account widget ({@code mid}); null when absent. */
+    final String identityPrefs;
+    /** Prefs file holding the account token, keyed by mid; null when absent. */
+    final String tokenPrefs;
 
     private GameProfile(String label, String pkg, String activity, List<String> files,
-                        List<String> switchFiles, boolean supported) {
+                        List<String> switchFiles, boolean supported,
+                        String loginPrefs, String identityPrefs, String tokenPrefs) {
         this.label = label;
         this.pkg = pkg;
         this.activity = activity;
         this.files = files;
         this.switchFiles = switchFiles;
         this.supported = supported;
+        this.loginPrefs = loginPrefs;
+        this.identityPrefs = identityPrefs;
+        this.tokenPrefs = tokenPrefs;
     }
 
     /** 星铁：唯一验证过 4 文件切换的游戏。 */
@@ -45,17 +55,38 @@ final class GameProfile {
                     "shared_prefs/mihoyo_sdk_preference.xml",
                     "shared_prefs/combo_widget.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db"),
-            true);
+            true,
+            "shared_prefs/porte_sdk_account_PRODUCT.xml",
+            "shared_prefs/combo_widget.xml",
+            null);
 
-    /** 原神、绝区零：仅登记包名与入口，文件清单尚未调研，故不支持拍摄与切换。 */
+    /** 原神 7.2：无 combo_widget，账号 token 存在按 mid 命名的 prefs key 里。 */
     static final GameProfile GENSHIN = new GameProfile(
             "原神", "com.miHoYo.Yuanshen",
             "com.miHoYo.Yuanshen/com.miHoYo.GetMobileInfo.MainActivity",
-            Collections.emptyList(), Collections.emptyList(), false);
+            Arrays.asList(
+                    "shared_prefs/porte_sdk_account_PRODUCT.xml",
+                    "shared_prefs/porte_sdk_token_PRODUCT.xml",
+                    "shared_prefs/mihoyo_sdk_preference.xml",
+                    "shared_prefs/mhy_plat_porte_crypto.xml",
+                    "shared_prefs/mdk_passport_sp.xml",
+                    "shared_prefs/com.miHoYo.Yuanshen.v2.playerprefs.xml",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-journal",
+                    "databases/mihoyo_account",
+                    "databases/mihoyo_account-journal"),
+            Arrays.asList(
+                    "shared_prefs/porte_sdk_token_PRODUCT.xml",
+                    "shared_prefs/mihoyo_sdk_preference.xml",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db"),
+            true,
+            null,
+            null,
+            "shared_prefs/porte_sdk_token_PRODUCT.xml");
 
     static final GameProfile ZZZ = new GameProfile(
             "绝区零", "com.miHoYo.Nap", "",
-            Collections.emptyList(), Collections.emptyList(), false);
+            Collections.emptyList(), Collections.emptyList(), false, null, null, null);
 
     static final List<GameProfile> ALL = Arrays.asList(GENSHIN, STARRAIL, ZZZ);
 
