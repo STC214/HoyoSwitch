@@ -1,6 +1,8 @@
 import os
+import secrets
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -10,13 +12,38 @@ TOOLS = SDK / 'build-tools' / '36.0.0'
 ANDROID = SDK / 'platforms' / 'android-36' / 'android.jar'
 OUTPUT = HERE / 'build'
 SRC = HERE / 'src'
+RELEASE = OUTPUT / 'release'
+RELEASE_KEY = RELEASE / 'hoyoswitch-release.p12'
+RELEASE_PROPS = RELEASE / 'keystore.txt'
 
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
 
+def release_credentials():
+    """Returns (keystore, alias, password), creating a release key on first use."""
+    RELEASE.mkdir(parents=True, exist_ok=True)
+    if not RELEASE_KEY.exists():
+        password = secrets.token_urlsafe(18)
+        run('keytool', '-genkeypair', '-storetype', 'PKCS12', '-keystore', RELEASE_KEY,
+            '-storepass', password, '-alias', 'hoyoswitch', '-keyalg', 'RSA', '-keysize',
+            '4096', '-validity', '10000', '-dname', 'CN=HoyoSwitch, O=STC, C=CN')
+        RELEASE_PROPS.write_text(
+            f'keystore={RELEASE_KEY}\nalias=hoyoswitch\nstorepass={password}\n',
+            encoding='utf-8')
+        print(f'Release keystore created: {RELEASE_KEY}', flush=True)
+        print('BACK THIS FILE UP: losing it means no future updates.', flush=True)
+    values = {}
+    for line in RELEASE_PROPS.read_text(encoding='utf-8').splitlines():
+        if '=' in line:
+            name, value = line.split('=', 1)
+            values[name.strip()] = value.strip()
+    return RELEASE_KEY, values['alias'], values['storepass']
+
+
 def main():
+    release = '--release' in sys.argv
     OUTPUT.mkdir(exist_ok=True)
     res = OUTPUT / 'res'
     source_res = HERE / 'res'
@@ -29,7 +56,7 @@ def main():
     flat = OUTPUT / 'res.zip'
     unsigned = OUTPUT / 'unsigned.apk'
     aligned = OUTPUT / 'aligned.apk'
-    apk = OUTPUT / 'account-switch.apk'
+    apk = OUTPUT / ('account-switch-release.apk' if release else 'account-switch.apk')
     key = OUTPUT / 'local-test.p12'
     classes = OUTPUT / 'classes'
     generated = OUTPUT / 'gen'
@@ -58,12 +85,22 @@ def main():
         archive.write(OUTPUT / 'classes.dex', 'classes.dex')
 
     run(TOOLS / 'zipalign.exe', '-f', '4', unsigned, aligned)
+    signer = ('java', '-jar', TOOLS / 'lib' / 'apksigner.jar')
+    if release:
+        keystore, alias, password = release_credentials()
+        run(*signer, 'sign', '--ks', keystore, '--ks-key-alias', alias, '--ks-pass',
+            f'pass:{password}', '--out', apk, aligned)
+        run(*signer, 'verify', '--verbose', '--print-certs', apk)
+        shutil.copyfile(apk, RELEASE / apk.name)
+        print(f'Release APK built: {apk}', flush=True)
+        print(f'Backup copy: {RELEASE / apk.name}', flush=True)
+        return
     if not key.exists():
         run('keytool', '-genkeypair', '-storetype', 'PKCS12', '-keystore', key, '-storepass',
             'android', '-alias', 'local', '-keyalg', 'RSA', '-keysize', '2048', '-validity',
             '3650', '-dname', 'CN=Local Prototype')
-    signer = ('java', '-jar', TOOLS / 'lib' / 'apksigner.jar')
-    run(*signer, 'sign', '--ks', key, '--ks-pass', 'pass:android', '--out', apk, aligned)
+    run(*signer, 'sign', '--ks', key, '--ks-key-alias', 'local', '--ks-pass', 'pass:android',
+        '--out', apk, aligned)
     run(*signer, 'verify', '--verbose', apk)
     print(f'APK built: {apk}', flush=True)
 

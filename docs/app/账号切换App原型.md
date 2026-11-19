@@ -43,6 +43,11 @@
 - **历史版本**：更新快照前先把旧目录移入 `files/snapshots/<包名>/.history/<id>-<时间戳>`，**按快照 id 各自保留最近 3 份**（`.history` 由所有账号共用，不能按全局裁剪）；卡片菜单可回滚到任一归档版本，回滚前会把当前版本再归档一次，回滚后保留卡片当前的 id 与名称，只把内容与时间换成历史版本。
 - **账号密码与 SDK 上限**：账号密码只作备注用途（不影响切换），密码以 Keystore AES-256-GCM 加密后存进清单；`lastUsedAt` 在每次切换成功时刷新。SDK 本身允许 **50 个账号**（默认 10，游戏自定义模块改成 50），超出时按 `timestamp` 淘汰最旧的一条，证据见[原神点位记录 §6](../research/原神账号状态点位与验证记录.md)。
 - **构建**：沿用无 Gradle 流程，`python .\app\build.py` 调用 aapt2 → javac → d8 → zipalign → apksigner，产物 `app/build/account-switch.apk`，本地调试密钥 `app/build/local-test.p12`（均被 Git 忽略）。
+- **签名与发布**：
+  - 调试构建：`python .\app\build.py`，用 `app/build/local-test.p12`（CN=Local Prototype）签名，产物 `app/build/account-switch.apk`。
+  - 正式构建：`python .\app\build.py --release`，首次运行会生成 RSA-4096/10000 天的正式密钥 `app/build/release/hoyoswitch-release.p12`，随机口令写在同目录 `keystore.txt`，产物 `app/build/account-switch-release.apk`（同时复制到 `app/build/release/`）。证书 SHA-256：`81a5fc64529c23f1eef5a9de9cf32d6f6d71684aaf655c33f0adae36f59f9079`。
+  - 密钥已备份到 `%USERPROFILE%\HoyoSwitch-release\`，**必须妥善保存**：丢失后无法再对已安装版本做升级（签名不一致）。
+  - 注意：正式包与调试包签名不同，`adb install -r` 会失败；必须卸载旧版再装。卸载会同时删除 App 数据与快照加密用的 Keystore 密钥，**已有快照将无法解密**，需要重新登录并拍摄。
 
 ## 3. 目录
 
