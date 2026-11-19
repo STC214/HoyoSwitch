@@ -48,6 +48,17 @@ def stable(info):
     return {key: info[key] for key in ('uid', 'gid', 'mode', 'context')}
 
 
+def select(entries, only):
+    """Restrict snapshot entries to the requested paths, rejecting unknown names."""
+    if not only:
+        return entries
+    known = {entry['path'] for entry in entries}
+    unknown = sorted(set(only) - known)
+    if unknown:
+        raise ValueError(f'not part of this snapshot: {", ".join(unknown)}')
+    return [entry for entry in entries if entry['path'] in set(only)]
+
+
 def load_manifest(record):
     path = record / MANIFEST
     if not path.is_file():
@@ -154,8 +165,10 @@ def verify_local(record, manifest):
     return problems
 
 
-def restore(device, record, apply):
+def restore(device, record, apply, only=()):
     manifest = load_manifest(record)
+    entries = select(manifest['files'], only)
+    wanted = {entry['path'] for entry in entries}
     problems = verify_local(record, manifest)
     if problems:
         for line in problems:
@@ -165,7 +178,7 @@ def restore(device, record, apply):
     if device.game_pids():
         print(f'{device.serial}: {DATA_DIR} is in use, stop the game first', file=sys.stderr)
         return 1
-    rows = remote_state(device, manifest)
+    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
     if not differing:
         print('device already matches the snapshot; nothing to restore')
@@ -175,7 +188,7 @@ def restore(device, record, apply):
         return 0
     safety = capture(device)
     written = skipped = 0
-    for entry in manifest['files']:
+    for entry in entries:
         if not entry['present']:
             continue
         rel = entry['path']
@@ -199,13 +212,14 @@ def restore(device, record, apply):
                 return 1
             print(f'{rel}: owner/mode/context restored')
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
-    rows = remote_state(device, manifest)
+    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     leftover = show(rows)
-    print(f'written={written} skipped={skipped} safety_snapshot={safety}')
+    print(f'written={written} skipped={skipped} safety_snapshot={safety} '
+          f'scope={"selected" if only else "all"}')
     if leftover:
         print('restore finished with differences; safety snapshot can undo it', file=sys.stderr)
         return 1
-    print('restore verified: every snapshot file matches the device')
+    print('restore verified: every restored file matches the device')
     return 0
 
 
@@ -223,9 +237,11 @@ def command_verify(device, record, remote):
     return 0
 
 
-def command_diff(device, record):
+def command_diff(device, record, only=()):
     manifest = load_manifest(record)
-    differing = show(remote_state(device, manifest))
+    wanted = {entry['path'] for entry in select(manifest['files'], only)}
+    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
+    differing = show(rows)
     return 1 if differing else 0
 
 
@@ -239,9 +255,12 @@ def main():
     verifier.add_argument('--remote', action='store_true')
     differ = sub.add_parser('diff', help='compare the device with a snapshot')
     differ.add_argument('--record', required=True)
+    differ.add_argument('--only', action='append', default=[], metavar='PATH')
     restorer = sub.add_parser('restore', help='restore a snapshot (dry run by default)')
     restorer.add_argument('--record', required=True)
     restorer.add_argument('--apply', action='store_true')
+    restorer.add_argument('--only', action='append', default=[], metavar='PATH',
+                          help='restore only this file (repeatable)')
     args = parser.parse_args()
     device = Device(args.serial)
     try:
@@ -251,8 +270,8 @@ def main():
         if args.command == 'verify':
             return command_verify(device, Path(args.record).expanduser().resolve(), args.remote)
         if args.command == 'diff':
-            return command_diff(device, Path(args.record).expanduser().resolve())
-        return restore(device, Path(args.record).expanduser().resolve(), args.apply)
+            return command_diff(device, Path(args.record).expanduser().resolve(), args.only)
+        return restore(device, Path(args.record).expanduser().resolve(), args.apply, args.only)
     except (RuntimeError, OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1

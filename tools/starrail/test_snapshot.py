@@ -54,5 +54,27 @@ class ShowTest(unittest.TestCase):
         self.assertIn('differing=0', output)
 
 
+class SelectTest(unittest.TestCase):
+    ENTRIES = [dict(path='shared_prefs/a.xml', present=True),
+               dict(path='databases/b.db', present=True),
+               dict(path='databases/b.db-journal', present=False)]
+
+    def test_empty_selection_keeps_everything(self):
+        self.assertEqual(snapshot.select(self.ENTRIES, []), self.ENTRIES)
+
+    def test_selection_keeps_requested_order_of_entries(self):
+        chosen = snapshot.select(self.ENTRIES, ['databases/b.db', 'shared_prefs/a.xml'])
+        self.assertEqual([entry['path'] for entry in chosen], ['shared_prefs/a.xml', 'databases/b.db'])
+
+    def test_unknown_path_is_rejected(self):
+        with self.assertRaises(ValueError):
+            snapshot.select(self.ENTRIES, ['shared_prefs/missing.xml'])
+
+    def test_absent_entry_can_still_be_named(self):
+        chosen = snapshot.select(self.ENTRIES, ['databases/b.db-journal'])
+        self.assertEqual(len(chosen), 1)
+        self.assertFalse(chosen[0]['present'])
+
+
 if __name__ == '__main__':
     unittest.main()
