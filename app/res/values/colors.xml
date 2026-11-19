@@ -1,9 +1,13 @@
 <resources>
-    <color name="window_bg">#FAFAFA</color>
-    <color name="card_bg">#FFFFFF</color>
-    <color name="card_stroke">#E3E3E3</color>
-    <color name="accent">#0B57D0</color>
-    <color name="text_muted">#5F6368</color>
-    <color name="tab_selected_bg">#E8F0FE</color>
-    <color name="log_bg">#F1F3F4</color>
+    <color name="window_bg">#0E1016</color>
+    <color name="card_bg">#171A22</color>
+    <color name="card_stroke">#00000000</color>
+    <color name="accent">#7FA6FF</color>
+    <color name="on_accent">#10131A</color>
+    <color name="accent_tonal">#1B2740</color>
+    <color name="text_primary">#E7EAF2</color>
+    <color name="text_muted">#9BA4B5</color>
+    <color name="tab_selected_bg">#1B2740</color>
+    <color name="log_bg">#12151C</color>
+    <color name="pill_bg">#16203A</color>
 </resources>

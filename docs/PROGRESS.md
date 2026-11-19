@@ -18,6 +18,8 @@
 - 补充（14:53–14:54）：回滚自检通过。通过 `am start --ez selftest true` 注入写后校验失败，切换在写入第一个文件后中止并自动回滚，日志 `SELFTEST PASS`；设备仍是 A（`login_status=true`，账号库与 A2 一致、与 B2 不一致）。同时修正一处错误处理缺陷：成功回滚的提示被同一 try 的 catch 捕获，曾显示成「回滚失败」。自检会留下两份「回滚自检基线」快照。
 - 补充（14:58–14:59）：卡片菜单（重命名／删除快照／历史版本与回滚）与 `--es selftest cardops` 命令式自检；结果 `CARDOPS PASS rename=true delete=true history_entries=1`。此前用模拟点击点对话框验证失败（点空，重命名未生效），改为命令式自检；并确立「拉游戏只用 am start、不点桌面图标」的约定（`6630c24`）。
 - 补充（15:02–15:11）：UI 打磨与四轮审查修复。明暗两套主题（`res/values`、`values-night`）、卡片圆角描边、分栏选中态、日志折叠与 200 行上限；构建改为 aapt2 生成 `R.java` 后编译。审查共修四轮：对话框取消未复位 `busy`、未适配分栏仍能开悬浮按钮、更新先停游戏后校验、`su` 探测超时崩溃、stdin 提前关闭抛错、安全快照无限堆积、并发 `refresh` 覆盖新分栏、回滚历史时裁剪误删待回滚版本、悬浮按钮连点并发、两处死代码。每轮修完重建并复跑自检：`CARDOPS PASS (rename/delete/history_restore)`、`SELFTEST PASS`。版本 0.5。
+- 补充（16:40–16:45）：用户改版界面后整合并发布 0.6。新配色为紫色系（浅色 `#5735AC` / 深色 `#D2BAFF`），头部与分栏改为卡片/分段控件样式，账号卡片当前项用强调色描边，操作按钮与「⋯」符合 48dp 触控，提示文字移入滚动区，标题与状态行增加无障碍标记。整合后重建、安装到真机并复跑自检：`CARDOPS PASS`、`SELFTEST PASS`，设备仍在 A；明暗截图已更新到文档。
+- 补充（16:50–16:57）：按「轻控」风格重做界面并发布 0.7。改为固定暗色（`values` 与 `values-night` 同一套暗色调色板，主题 `Theme.Material.NoActionBar`，主按钮文字用 `on_accent`）；结构改为头像＋应用名＋版本胶囊、大标题、状态胶囊、编号小节与胶囊按钮；页面左右留白 24dp、卡片内边距 20dp、间距 14dp、按钮间隔 6–8dp。修复 `setFitsSystemWindows(true)` 覆盖左右内边距导致贴边的问题，并用 `OnApplyWindowInsetsListener` 处理 `targetSdk 36` 的边到边，内容不再钻到状态栏下；分栏去掉「（未适配）」后缀改为半透明，避免换行。复跑自检：`CARDOPS PASS`、`SELFTEST PASS`。
 
 ## 2026-11-19 第八轮：新数据代复验，4 文件切换可复现
 

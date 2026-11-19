@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -18,6 +19,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -183,95 +185,208 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout buildLayout() {
-        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        int pad = dp(24);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setFitsSystemWindows(true);
+        root.setPadding(pad, dp(14), pad, dp(14));
+        // targetSdk 36 draws edge to edge; add the system bar insets on top of our own padding.
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(pad, dp(14) + insets.getSystemWindowInsetTop(),
+                    pad, dp(14) + insets.getSystemWindowInsetBottom());
+            return insets;
+        });
 
-        TextView title = new TextView(this);
-        title.setText("米哈游账号切换（原型）");
-        title.setTextSize(22);
-        root.addView(title, matchWrap());
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
 
+        ImageView avatar = new ImageView(this);
+        avatar.setImageResource(R.drawable.app_icon);
+        GradientDrawable avatarBg = new GradientDrawable();
+        avatarBg.setColor(getColor(R.color.card_bg));
+        avatarBg.setCornerRadius(dp(18));
+        avatar.setBackground(avatarBg);
+        avatar.setClipToOutline(true);
+        headerRow.addView(avatar, new LinearLayout.LayoutParams(dp(56), dp(56)));
+
+        LinearLayout headerText = new LinearLayout(this);
+        headerText.setOrientation(LinearLayout.VERTICAL);
+        headerText.setPadding(dp(14), 0, 0, 0);
+        TextView appName = new TextView(this);
+        appName.setText("账号切换");
+        appName.setTextSize(22);
+        appName.setTypeface(null, Typeface.BOLD);
+        appName.setTextColor(getColor(R.color.text_primary));
+        if (Build.VERSION.SDK_INT >= 28) {
+            appName.setAccessibilityHeading(true);
+        }
+        headerText.addView(appName, matchWrap());
+        TextView appSubtitle = new TextView(this);
+        appSubtitle.setText("米哈游账号快照 · 一键切换");
+        appSubtitle.setTextSize(12);
+        appSubtitle.setTextColor(getColor(R.color.text_muted));
+        headerText.addView(appSubtitle, matchWrap());
+        headerRow.addView(headerText, weightWrap());
+
+        TextView versionChip = new TextView(this);
+        versionChip.setText(currentVersion());
+        versionChip.setTextSize(12);
+        versionChip.setTextColor(getColor(R.color.accent));
+        versionChip.setPadding(dp(12), dp(6), dp(12), dp(6));
+        versionChip.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 20));
+        headerRow.addView(versionChip, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(headerRow, withBottomMargin(matchWrap(), dp(22)));
+
+        TextView headline = new TextView(this);
+        headline.setText("切号，轻一点。");
+        headline.setTextSize(28);
+        headline.setTypeface(null, Typeface.BOLD);
+        headline.setTextColor(getColor(R.color.text_primary));
+        root.addView(headline, matchWrap());
+
+        TextView subline = new TextView(this);
+        subline.setText("拍摄当前账号，切换时只写必要文件。");
+        subline.setTextSize(13);
+        subline.setTextColor(getColor(R.color.text_muted));
+        subline.setPadding(0, dp(6), 0, dp(16));
+        root.addView(subline, matchWrap());
+
+        LinearLayout statusPill = new LinearLayout(this);
+        statusPill.setOrientation(LinearLayout.HORIZONTAL);
+        statusPill.setGravity(Gravity.CENTER_VERTICAL);
+        statusPill.setPadding(dp(14), dp(12), dp(14), dp(12));
+        statusPill.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 24));
+        View dot = new View(this);
+        GradientDrawable dotBg = new GradientDrawable();
+        dotBg.setShape(GradientDrawable.OVAL);
+        dotBg.setColor(getColor(R.color.accent));
+        dot.setBackground(dotBg);
+        statusPill.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
         statusView = new TextView(this);
         statusView.setText("正在检测 Root 与游戏状态…");
         statusView.setTextSize(13);
-        statusView.setTextColor(getColor(R.color.text_muted));
-        statusView.setPadding(0, pad / 2, 0, pad / 2);
-        root.addView(statusView, matchWrap());
+        statusView.setTextColor(getColor(R.color.accent));
+        statusView.setPadding(dp(10), 0, 0, 0);
+        statusView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        statusPill.addView(statusView, weightWrap());
+        root.addView(statusPill, withBottomMargin(matchWrap(), dp(6)));
 
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+
+        content.addView(section("01 / 游戏分栏"), matchWrap());
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
+        tabs.setBackground(surface(R.color.card_bg, R.color.card_bg, 26));
+        tabs.setPadding(dp(8), dp(8), dp(8), dp(8));
         for (GameProfile profile : GameProfile.ALL) {
-            Button tab = new Button(this);
-            tab.setText(profile.label);
+            Button tab = pill(profile.label, false);
             tab.setOnClickListener(view -> selectGame(profile));
-            tabs.addView(tab, weightWrap());
+            tabs.addView(tab, weightWrap(1f, dp(3)));
             gameButtons.add(tab);
         }
-        root.addView(tabs, matchWrap());
+        content.addView(tabs, withBottomMargin(matchWrap(), dp(4)));
+        renderTabs();
+
+        content.addView(section("02 / 拍摄与切换"), matchWrap());
+        LinearLayout controlCard = new LinearLayout(this);
+        controlCard.setOrientation(LinearLayout.VERTICAL);
+        controlCard.setBackground(surface(R.color.card_bg, R.color.card_bg, 26));
+        controlCard.setPadding(dp(20), dp(18), dp(20), dp(18));
 
         nameInput = new EditText(this);
         nameInput.setHint("账号名称（可选）");
-        root.addView(nameInput, matchWrap());
+        nameInput.setTextSize(14);
+        nameInput.setBackground(null);
+        controlCard.addView(nameInput, withBottomMargin(matchWrap(), dp(8)));
 
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        captureButton = new Button(this);
-        captureButton.setText("拍摄快照");
+        LinearLayout primaryRow = new LinearLayout(this);
+        primaryRow.setOrientation(LinearLayout.HORIZONTAL);
+        captureButton = pill("拍摄快照", true);
         captureButton.setOnClickListener(view -> capture());
-        launchButton = new Button(this);
-        launchButton.setText("启动游戏");
+        launchButton = pill("启动游戏", false);
         launchButton.setOnClickListener(view -> runOp("启动 " + game.label, game::launch));
-        Button refreshButton = new Button(this);
-        refreshButton.setText("刷新");
+        Button refreshButton = pill("刷新", false);
         refreshButton.setOnClickListener(view -> refresh());
-        actions.addView(captureButton, weightWrap());
-        actions.addView(launchButton, weightWrap());
-        actions.addView(refreshButton, weightWrap());
-        root.addView(actions, matchWrap());
+        primaryRow.addView(captureButton, weightWrap(1.4f, dp(4)));
+        primaryRow.addView(launchButton, weightWrap(1f, dp(4)));
+        primaryRow.addView(refreshButton, weightWrap(1f, dp(4)));
+        controlCard.addView(primaryRow, withBottomMargin(matchWrap(), dp(8)));
 
-        Button floatingButton = new Button(this);
-        floatingButton.setText("悬浮按钮");
+        LinearLayout utilityRow = new LinearLayout(this);
+        utilityRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button floatingButton = pill("悬浮按钮", false);
         floatingButton.setOnClickListener(view -> toggleFloating());
-        logToggle = new Button(this);
-        logToggle.setText("隐藏日志");
+        logToggle = pill("隐藏日志", false);
         logToggle.setOnClickListener(view -> toggleLog());
-        LinearLayout utility = new LinearLayout(this);
-        utility.setOrientation(LinearLayout.HORIZONTAL);
-        utility.addView(floatingButton, weightWrap());
-        utility.addView(logToggle, weightWrap());
-        root.addView(utility, matchWrap());
+        utilityRow.addView(floatingButton, weightWrap(1f, dp(4)));
+        utilityRow.addView(logToggle, weightWrap(1f, dp(4)));
+        controlCard.addView(utilityRow, matchWrap());
 
         TextView hint = new TextView(this);
         hint.setText("拍摄与切换前请先停止游戏；切换只写该游戏的账号文件并自动备份。"
-                + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」，或用悬浮按钮刷新当前账号。");
+                + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」。");
         hint.setTextSize(12);
         hint.setTextColor(getColor(R.color.text_muted));
-        hint.setPadding(0, pad / 2, 0, pad / 2);
-        root.addView(hint, matchWrap());
+        hint.setPadding(0, dp(12), 0, 0);
+        controlCard.addView(hint, matchWrap());
+        content.addView(controlCard, withBottomMargin(matchWrap(), dp(4)));
 
-        ScrollView scroll = new ScrollView(this);
+        content.addView(section("03 / 账号快照"), matchWrap());
         cardList = new LinearLayout(this);
         cardList.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(cardList);
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        root.addView(scroll, scrollParams);
+        content.addView(cardList, matchWrap());
 
+        content.addView(section("04 / 操作日志"), matchWrap());
         logView = new TextView(this);
         logView.setTextSize(11);
         logView.setTextColor(getColor(R.color.text_muted));
         logScroll = new ScrollView(this);
         logScroll.addView(logView);
-        logScroll.setBackground(cardBackground());
-        int logPad = dp(10);
-        logScroll.setPadding(logPad, logPad, logPad, logPad);
-        int logHeight = dp(84);
-        root.addView(logScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, logHeight));
+        logScroll.setBackground(surface(R.color.log_bg, R.color.log_bg, 22));
+        logScroll.setPadding(dp(16), dp(14), dp(16), dp(14));
+        content.addView(logScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
+
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
+    }
+
+    private TextView section(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(11);
+        view.setTextColor(getColor(R.color.text_muted));
+        view.setLetterSpacing(0.08f);
+        view.setPadding(0, dp(18), 0, dp(8));
+        return view;
+    }
+
+    private Button pill(String text, boolean primary) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTypeface(null, Typeface.BOLD);
+        button.setTextColor(getColor(primary ? R.color.on_accent : R.color.accent));
+        button.setBackground(surface(primary ? R.color.accent : R.color.accent_tonal,
+                primary ? R.color.accent : R.color.accent_tonal, 24));
+        button.setMinHeight(dp(48));
+        button.setMinWidth(0);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        return button;
+    }
+
+    private String currentVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException error) {
+            return "0.0";
+        }
     }
 
     private void toggleLog() {
@@ -283,11 +398,11 @@ public final class MainActivity extends Activity {
         logToggle.setText(visible ? "显示日志" : "隐藏日志");
     }
 
-    private GradientDrawable cardBackground() {
+    private GradientDrawable surface(int fill, int stroke, int radius) {
         GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(getColor(R.color.card_bg));
-        drawable.setCornerRadius(dp(12));
-        drawable.setStroke(dp(1), getColor(R.color.card_stroke));
+        drawable.setColor(getColor(fill));
+        drawable.setCornerRadius(dp(radius));
+        drawable.setStroke(dp(1), getColor(stroke));
         return drawable;
     }
 
@@ -306,6 +421,14 @@ public final class MainActivity extends Activity {
 
     private static LinearLayout.LayoutParams weightWrap(float weight) {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+    }
+
+    private static LinearLayout.LayoutParams weightWrap(float weight, int sideMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+        params.leftMargin = sideMargin;
+        params.rightMargin = sideMargin;
+        return params;
     }
 
     private void selectGame(GameProfile profile) {
@@ -371,18 +494,14 @@ public final class MainActivity extends Activity {
             Button button = gameButtons.get(index);
             GameProfile profile = GameProfile.ALL.get(index);
             boolean selected = profile == game;
-            button.setText(profile.label + (profile.supported ? "" : "（未适配）"));
-            button.setTypeface(null, selected ? android.graphics.Typeface.BOLD
-                    : android.graphics.Typeface.NORMAL);
-            button.setTextColor(getColor(selected ? R.color.accent : R.color.text_muted));
-            if (selected) {
-                GradientDrawable background = new GradientDrawable();
-                background.setColor(getColor(R.color.tab_selected_bg));
-                background.setCornerRadius(dp(10));
-                button.setBackground(background);
-            } else {
-                button.setBackground(null);
-            }
+            button.setText(profile.label);
+            button.setSelected(selected);
+            button.setAlpha(profile.supported ? 1f : 0.55f);
+            button.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
+            button.setTextColor(getColor(selected ? R.color.on_accent : R.color.text_muted));
+            button.setBackground(selected
+                    ? surface(R.color.accent, R.color.accent, 20)
+                    : surface(R.color.card_bg, R.color.card_bg, 20));
         }
     }
 
@@ -435,14 +554,18 @@ public final class MainActivity extends Activity {
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
-            card.setBackground(cardBackground());
-            int cardPad = dp(14);
-            card.setPadding(cardPad, cardPad, cardPad, cardPad);
+            boolean isCurrent = snapshot.id.equals(currentId);
+            card.setBackground(isCurrent
+                    ? surface(R.color.card_bg, R.color.accent, 26)
+                    : surface(R.color.card_bg, R.color.card_bg, 26));
+            int cardPad = dp(20);
+            card.setPadding(cardPad, dp(18), cardPad, dp(18));
 
             TextView label = new TextView(this);
-            boolean isCurrent = snapshot.id.equals(currentId);
+            label.setTypeface(null, Typeface.BOLD);
             label.setText(isCurrent ? snapshot.name + "　（当前登录）" : snapshot.name);
-            label.setTextSize(16);
+            label.setTextSize(18);
+            label.setTextColor(getColor(R.color.text_primary));
             card.addView(label, matchWrap());
 
             TextView meta = new TextView(this);
@@ -455,27 +578,31 @@ public final class MainActivity extends Activity {
             meta.setText(format.format(new Date(snapshot.createdAt)) + " · "
                     + present + "/" + snapshot.entries.size() + " 个状态文件存在");
             meta.setTextSize(12);
+            meta.setTextColor(getColor(R.color.text_muted));
+            meta.setPadding(0, dp(4), 0, dp(14));
             card.addView(meta, matchWrap());
+
+            Button switchButton = pill("切换到此账号", true);
+            switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
+            card.addView(switchButton, withBottomMargin(matchWrap(), dp(8)));
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            Button switchButton = new Button(this);
-            switchButton.setText("切换到此账号");
-            switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
-            Button updateButton = new Button(this);
-            updateButton.setText("更新此快照");
+            Button updateButton = pill("更新此快照", false);
             updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name,
                     () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
-            Button moreButton = new Button(this);
-            moreButton.setText("⋯");
-            moreButton.setOnClickListener(view -> showCardMenu(snapshot));
-            row.addView(switchButton, weightWrap(2f));
-            row.addView(updateButton, weightWrap(1.6f));
-            row.addView(moreButton, weightWrap(0.6f));
+            Button moreButton = pill("⋯", false);
+            moreButton.setContentDescription("更多操作：" + snapshot.name);
+            row.addView(updateButton, weightWrap(1f, dp(4)));
+            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(56),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            moreParams.leftMargin = dp(4);
+            moreParams.rightMargin = dp(4);
+            row.addView(moreButton, moreParams);
             card.addView(row, matchWrap());
 
-            cardList.addView(card, withBottomMargin(matchWrap(), dp(10)));
+            cardList.addView(card, withBottomMargin(matchWrap(), dp(14)));
         }
     }
 
