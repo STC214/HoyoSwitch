@@ -3,7 +3,6 @@ package dev.hoyoswitch.app;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 /** One supported game. File lists are only filled in for games whose switching was verified. */
@@ -14,6 +13,8 @@ final class GameProfile {
     final List<String> files;
     final List<String> switchFiles;
     final boolean supported;
+    /** Switching only works after its file set has been verified on a real account. */
+    final boolean switchVerified;
     /** Prefs file holding {@code login_status}; null when the game does not use it. */
     final String loginPrefs;
     /** Prefs file holding the account widget ({@code mid}); null when absent. */
@@ -24,7 +25,7 @@ final class GameProfile {
     final String accountDb;
 
     private GameProfile(String label, String pkg, String activity, List<String> files,
-                        List<String> switchFiles, boolean supported,
+                        List<String> switchFiles, boolean supported, boolean switchVerified,
                         String loginPrefs, String identityPrefs, String tokenPrefs,
                         String accountDb) {
         this.label = label;
@@ -33,6 +34,7 @@ final class GameProfile {
         this.files = files;
         this.switchFiles = switchFiles;
         this.supported = supported;
+        this.switchVerified = switchVerified;
         this.loginPrefs = loginPrefs;
         this.identityPrefs = identityPrefs;
         this.tokenPrefs = tokenPrefs;
@@ -60,6 +62,7 @@ final class GameProfile {
                     "shared_prefs/combo_widget.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db"),
             true,
+            true,
             "shared_prefs/porte_sdk_account_PRODUCT.xml",
             "shared_prefs/combo_widget.xml",
             null,
@@ -85,14 +88,42 @@ final class GameProfile {
                     "shared_prefs/mihoyo_sdk_preference.xml",
                     "databases/PORTE_ACCOUNT_PRODUCT.db"),
             true,
+            true,
             null,
             null,
             "shared_prefs/porte_sdk_token_PRODUCT.xml",
             "databases/PORTE_ACCOUNT_PRODUCT.db");
 
+    /**
+     * 绝区零 3.3：入口与星铁相同，先按星铁的账号模型登记（combo_widget + 账号库），
+     * 切换集合待真实登录后差分确认，未验证前只允许拍摄。
+     */
     static final GameProfile ZZZ = new GameProfile(
-            "绝区零", "com.miHoYo.Nap", "",
-            Collections.emptyList(), Collections.emptyList(), false, null, null, null, null);
+            "绝区零", "com.miHoYo.Nap",
+            "com.miHoYo.Nap/com.mihoyo.combosdk.ComboSDKActivity",
+            Arrays.asList(
+                    "shared_prefs/porte_sdk_account_PRODUCT.xml",
+                    "shared_prefs/porte_sdk_token_PRODUCT.xml",
+                    "shared_prefs/mihoyo_sdk_preference.xml",
+                    "shared_prefs/combo_widget.xml",
+                    "shared_prefs/mhy_plat_porte_crypto.xml",
+                    "shared_prefs/mdk_passport_sp.xml",
+                    "shared_prefs/com.miHoYo.Nap.v2.playerprefs.xml",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db-journal",
+                    "databases/mihoyo_account",
+                    "databases/mihoyo_account-journal"),
+            Arrays.asList(
+                    "shared_prefs/porte_sdk_token_PRODUCT.xml",
+                    "shared_prefs/mihoyo_sdk_preference.xml",
+                    "shared_prefs/combo_widget.xml",
+                    "databases/PORTE_ACCOUNT_PRODUCT.db"),
+            true,
+            false,
+            "shared_prefs/porte_sdk_account_PRODUCT.xml",
+            "shared_prefs/combo_widget.xml",
+            null,
+            null);
 
     static final List<GameProfile> ALL = Arrays.asList(GENSHIN, STARRAIL, ZZZ);
 

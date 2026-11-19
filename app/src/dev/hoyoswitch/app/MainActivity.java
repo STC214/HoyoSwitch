@@ -758,6 +758,7 @@ public final class MainActivity extends Activity {
             card.setOrientation(LinearLayout.VERTICAL);
             boolean isCurrent = snapshot.id.equals(currentId);
             boolean readable = store.decryptable(snapshot);
+            boolean switchable = snapshot.game.switchVerified;
             GradientDrawable cardFill = isCurrent
                     ? surface(R.color.card_bg, R.color.accent, 26)
                     : surface(R.color.card_bg, R.color.card_bg, 26);
@@ -790,7 +791,8 @@ public final class MainActivity extends Activity {
                     + present + "/" + snapshot.entries.size() + " 个状态文件存在"
                     + (snapshot.lastUsedAt > 0 ? " · 上次使用 "
                     + format.format(new Date(snapshot.lastUsedAt)) : "")
-                    + (readable ? "" : " · 无法解密（密钥已失效）"));
+                    + (readable ? "" : " · 无法解密（密钥已失效）")
+                    + (switchable ? "" : " · 切换待验证（当前只能拍摄）"));
             meta.setTextSize(12);
             meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
             meta.setPadding(0, dp(4), 0, dp(14));
@@ -799,8 +801,8 @@ public final class MainActivity extends Activity {
 
             Button switchButton = pill("切换到此账号", true);
             switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
-            switchButton.setEnabled(readable);
-            switchButton.setAlpha(readable ? 1f : 0.45f);
+            switchButton.setEnabled(readable && switchable);
+            switchButton.setAlpha(readable && switchable ? 1f : 0.45f);
             card.addView(switchButton, withBottomMargin(matchWrap(), dp(8)));
 
             LinearLayout row = new LinearLayout(this);
@@ -1270,6 +1272,10 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmSwitch(SnapshotStore.Snapshot target) {
+        if (!target.game.switchVerified) {
+            toast(target.game.label + " 的切换文件还没验证，先拍摄账号快照做基准");
+            return;
+        }
         if (busy) {
             toast("上一个操作还没结束");
             return;

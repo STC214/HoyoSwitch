@@ -387,9 +387,18 @@ final class SnapshotStore {
             }
         }
         if (game.tokenPrefs != null) {
+            Entry tokenEntry = snapshot.entry(game.tokenPrefs);
+            if (tokenEntry == null || !tokenEntry.present) {
+                return "";
+            }
             return tokenMid(readSnapshot(snapshot, game.tokenPrefs));
         }
         if (game.identityPrefs != null) {
+            Entry widgetEntry = snapshot.entry(game.identityPrefs);
+            if (widgetEntry == null || !widgetEntry.present) {
+                // Logged-out captures legitimately have no account widget.
+                return "";
+            }
             byte[] widget = readSnapshot(snapshot, game.identityPrefs);
             String account = preferenceValue(widget, "string", "account");
             return account == null ? "" : accountField(account, "mid");
