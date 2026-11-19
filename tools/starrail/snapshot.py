@@ -207,12 +207,14 @@ def restore(device, record, apply, only=()):
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
     stale = sidecar_issues(device, manifest, wanted)
-    if not differing and not stale:
-        print('device already matches the snapshot; nothing to restore')
-        return 0
-    if not differing and stale:
+    if stale:
+        # Refuse before any write: applying the main file while a stale WAL remains would leave
+        # a mixed state (new main + old WAL).
         print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
         return 1
+    if not differing:
+        print('device already matches the snapshot; nothing to restore')
+        return 0
     if not apply:
         print('dry run; add --apply to restore')
         return 0

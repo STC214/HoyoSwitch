@@ -27,10 +27,12 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -193,17 +195,25 @@ final class SnapshotStore {
         // the files are being read, the resulting mix must not be saved as a valid snapshot.
         String beforeMid = live ? currentMidOrEmpty(game) : null;
         // Each file needs its own root call; run them in parallel instead of one after another.
-        // The account database and its journal/WAL/SHM are read together so a checkpoint that
-        // lands between reads cannot leave the main file and sidecars inconsistent.
-        List<String> dbGroup = new ArrayList<>();
-        if (game.accountDb != null && game.files.contains(game.accountDb)) {
-            dbGroup.add(game.accountDb);
+        // Every database (account db and mihoyo_account) is read together with its journal/WAL/SHM
+        // so a checkpoint landing between reads cannot leave the main file and sidecars inconsistent.
+        List<List<String>> dbGroups = new ArrayList<>();
+        Set<String> grouped = new HashSet<>();
+        for (String relative : game.files) {
+            if (grouped.contains(relative) || !isDatabase(relative)) {
+                continue;
+            }
+            List<String> group = new ArrayList<>();
+            group.add(relative);
+            grouped.add(relative);
             for (String sideSuffix : new String[]{"-journal", "-wal", "-shm"}) {
-                String rel = game.accountDb + sideSuffix;
-                if (game.files.contains(rel)) {
-                    dbGroup.add(rel);
+                String side = relative + sideSuffix;
+                if (game.files.contains(side)) {
+                    group.add(side);
+                    grouped.add(side);
                 }
             }
+            dbGroups.add(group);
         }
         ExecutorService pool = Executors.newFixedThreadPool(5);
         List<Future<Entry>> futures = new ArrayList<>();
@@ -211,7 +221,7 @@ final class SnapshotStore {
         boolean complete = false;
         try {
             for (String relative : game.files) {
-                if (dbGroup.contains(relative)) {
+                if (grouped.contains(relative)) {
                     continue;
                 }
                 boolean stable = live && game.switchFiles.contains(relative);
@@ -221,11 +231,11 @@ final class SnapshotStore {
             for (int index = 0; index < singles.size(); index++) {
                 snapshot.entries.put(singles.get(index), futures.get(index).get());
             }
-            if (!dbGroup.isEmpty()) {
-                Map<String, byte[]> group = readDbGroup(game, dbGroup, live);
-                for (String relative : dbGroup) {
-                    byte[] bytes = group.get(relative);
-                    if (bytes == null || bytes.length == 0) {
+            for (List<String> group : dbGroups) {
+                Map<String, byte[]> read = readDbGroup(game, group, live);
+                for (String relative : group) {
+                    byte[] bytes = read.get(relative);
+                    if (bytes == null) {
                         Entry missing = new Entry();
                         missing.path = relative;
                         missing.present = false;
@@ -351,16 +361,17 @@ final class SnapshotStore {
     }
 
     private String readDbGroupOnce(GameProfile game, List<String> relatives) throws IOException {
-        StringBuilder script = new StringBuilder();
+        StringBuilder script = new StringBuilder("f=0; ");
         for (String relative : relatives) {
             String path = game.path(relative);
             script.append("printf '\\n--HSN1DB--").append(relative).append("\\n'; ");
-            script.append("if [ -e ").append(quote(path)).append(" ]; then cat ")
-                    .append(quote(path)).append("; fi; ");
+            script.append("if [ -e ").append(quote(path)).append(" ]; then printf 'P'; cat ")
+                    .append(quote(path)).append(" || f=1; else printf 'A'; fi; ");
         }
+        script.append("exit $f");
         RootShell.Result result = RootShell.run(script.toString());
         if (result.code != 0) {
-            throw new IOException("读取账号数据库失败(" + result.code + "): " + result.err);
+            throw new IOException("读取数据库失败(" + result.code + "): " + result.err);
         }
         return new String(result.out, StandardCharsets.ISO_8859_1);
     }
@@ -372,7 +383,7 @@ final class SnapshotStore {
             String marker = "\n--HSN1DB--" + relative + "\n";
             int start = data.indexOf(marker);
             if (start < 0) {
-                out.put(relative, new byte[0]);
+                out.put(relative, null);
                 continue;
             }
             start += marker.length();
@@ -383,7 +394,14 @@ final class SnapshotStore {
                     end = candidate;
                 }
             }
-            out.put(relative, data.substring(start, end).getBytes(StandardCharsets.ISO_8859_1));
+            String section = data.substring(start, end);
+            if (section.isEmpty()) {
+                out.put(relative, null);
+            } else if (section.charAt(0) == 'A') {
+                out.put(relative, null); // absent
+            } else {
+                out.put(relative, section.substring(1).getBytes(StandardCharsets.ISO_8859_1));
+            }
         }
         return out;
     }
@@ -905,12 +923,21 @@ final class SnapshotStore {
             String suffix = version.getName().substring(duplicate.id.length() + 1);
             File target = new File(historyDir, primary.id + "-" + suffix);
             if (target.exists()) {
-                target = new File(historyDir,
-                        primary.id + "-" + System.currentTimeMillis() + "-" + suffix);
+                // Keep the name pure digits so isHistoryOf still recognises it.
+                long timestamp = System.currentTimeMillis();
+                target = new File(historyDir, primary.id + "-" + timestamp);
+                while (target.exists()) {
+                    target = new File(historyDir, primary.id + "-" + (++timestamp));
+                }
             }
             //noinspection ResultOfMethodCallIgnored
             version.renameTo(target);
         }
+    }
+
+    /** Database paths: the account db ends in .db, mihoyo_account has no extension. */
+    private static boolean isDatabase(String relative) {
+        return relative.endsWith(".db") || relative.equals("databases/mihoyo_account");
     }
 
     /** True when {@code name} is exactly {@code id + "-" + digits}; avoids id-prefix collisions. */
