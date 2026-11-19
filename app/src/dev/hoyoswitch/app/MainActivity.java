@@ -745,6 +745,7 @@ public final class MainActivity extends Activity {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             boolean isCurrent = snapshot.id.equals(currentId);
+            boolean readable = store.decryptable(snapshot);
             GradientDrawable cardFill = isCurrent
                     ? surface(R.color.card_bg, R.color.accent, 26)
                     : surface(R.color.card_bg, R.color.card_bg, 26);
@@ -774,14 +775,17 @@ public final class MainActivity extends Activity {
                 }
             }
             meta.setText(format.format(new Date(snapshot.createdAt)) + " · "
-                    + present + "/" + snapshot.entries.size() + " 个状态文件存在");
+                    + present + "/" + snapshot.entries.size() + " 个状态文件存在"
+                    + (readable ? "" : " · 无法解密（密钥已失效）"));
             meta.setTextSize(12);
-            meta.setTextColor(getColor(R.color.text_muted));
+            meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
             meta.setPadding(0, dp(4), 0, dp(14));
             card.addView(meta, matchWrap());
 
             Button switchButton = pill("切换到此账号", true);
             switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
+            switchButton.setEnabled(readable);
+            switchButton.setAlpha(readable ? 1f : 0.45f);
             card.addView(switchButton, withBottomMargin(matchWrap(), dp(8)));
 
             LinearLayout row = new LinearLayout(this);
@@ -790,6 +794,8 @@ public final class MainActivity extends Activity {
             Button updateButton = pill("更新此快照", false);
             updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name,
                     () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
+            updateButton.setEnabled(readable);
+            updateButton.setAlpha(readable ? 1f : 0.45f);
             Button moreButton = pill("⋯", false);
             moreButton.setContentDescription("更多操作：" + snapshot.name);
             moreButton.setOnClickListener(view -> showCardMenu(snapshot));
@@ -1099,7 +1105,22 @@ public final class MainActivity extends Activity {
         appendLog("读取当前账号…");
         new Thread(() -> {
             try {
+                if (!store.decryptable(target)) {
+                    appendLog("这张快照无法解密，不能切换");
+                    main.post(() -> toast("这张快照无法解密，请删除后重新拍摄"));
+                    busy = false;
+                    refresh();
+                    return;
+                }
                 SnapshotStore.Current current = store.detectCurrent(target.game);
+                if (current.loggedIn && !current.mid.isEmpty()
+                        && current.mid.equals(store.accountMid(target))) {
+                    appendLog("当前已经是这个账号，无需切换（不会关闭游戏）");
+                    main.post(() -> toast("当前已经是这个账号，无需切换"));
+                    busy = false;
+                    refresh();
+                    return;
+                }
                 List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
                 main.post(() -> askSwitch(target, currentLabel));

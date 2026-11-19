@@ -463,13 +463,10 @@ final class SnapshotStore {
             try {
                 mid = readAccountMid(snapshot);
             } catch (IOException error) {
-                String message = error.getMessage() == null ? "" : error.getMessage();
-                long age = System.currentTimeMillis() - snapshot.createdAt;
-                if (message.contains("解密") && age > 10 * 60 * 1000L) {
-                    // Payloads encrypted with a key that no longer exists can never be restored.
-                    Log.i("hoyoswitch", "drop unreadable snapshot " + snapshot.id);
-                    delete(snapshot);
-                }
+                // Never delete here: a key can be temporarily unavailable, and the card may still
+                // be inspected or deleted by hand. Deleting silently destroyed valid snapshots.
+                Log.i("hoyoswitch", "skip unreadable snapshot " + snapshot.id + ": "
+                        + error.getMessage());
                 continue;
             }
             if (mid.isEmpty()) {
@@ -673,6 +670,16 @@ final class SnapshotStore {
             rename(existing, name);
         }
         return existing.id;
+    }
+
+    /** True when the payloads can actually be decrypted with the current Keystore key. */
+    boolean decryptable(Snapshot snapshot) {
+        try {
+            readAccountMid(snapshot);
+            return true;
+        } catch (IOException error) {
+            return false;
+        }
     }
 
     private Snapshot findByAccount(GameProfile game, String mid) {

@@ -6,6 +6,7 @@ import android.security.keystore.KeyProperties;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.security.UnrecoverableKeyException;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -71,18 +72,26 @@ final class SnapshotCrypto {
     private static SecretKey key() throws GeneralSecurityException, IOException {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
-        if (!store.containsAlias(ALIAS)) {
-            KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,
-                    "AndroidKeyStore");
-            generator.init(new KeyGenParameterSpec.Builder(ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
-                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
-                    .setRandomizedEncryptionRequired(true)
-                    .build());
-            generator.generateKey();
+        SecretKey existing;
+        try {
+            existing = (SecretKey) store.getKey(ALIAS, null);
+        } catch (UnrecoverableKeyException error) {
+            // Do not regenerate: that would silently make every stored snapshot unreadable.
+            throw new IOException("快照密钥不可用（可能已被系统失效），无法读取已有快照", error);
         }
+        if (existing != null) {
+            return existing;
+        }
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,
+                "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .setRandomizedEncryptionRequired(true)
+                .build());
+        generator.generateKey();
         return (SecretKey) store.getKey(ALIAS, null);
     }
 }
