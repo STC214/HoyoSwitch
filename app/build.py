@@ -12,7 +12,7 @@ TOOLS = SDK / 'build-tools' / '36.0.0'
 ANDROID = SDK / 'platforms' / 'android-36' / 'android.jar'
 OUTPUT = HERE / 'build'
 SRC = HERE / 'src'
-RELEASE = OUTPUT / 'release'
+RELEASE = HERE / 'keystore'
 RELEASE_KEY = RELEASE / 'hoyoswitch-release.p12'
 RELEASE_PROPS = RELEASE / 'keystore.txt'
 

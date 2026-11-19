@@ -49,6 +49,7 @@
 - 补充（22:43–22:50）：正式签名并发布 1.0.0。`app/build.py` 新增 `--release`：首次运行生成 RSA-4096、有效期 10000 天的 `app/build/release/hoyoswitch-release.p12`，随机 storepass 写入 `keystore.txt`，产物 `account-switch-release.apk` 并用 `apksigner verify --print-certs` 打印证书；调试构建保持原样。正式证书 DN=CN=HoyoSwitch, O=STC, C=CN，SHA-256 `81a5fc64…f9079`。密钥与口令已备份到 `%USERPROFILE%\HoyoSwitch-release\`。注意正式包与调试包签名不同：要安装需先卸载，卸载会清掉 App 数据与快照加密密钥，已有快照需重新拍摄；设备当前仍保留调试包 1.0.0（versionCode 33）以便继续使用。
 - 补充（23:12）：清理重复产物。正式包之前被复制成三份（`account-switch-release.apk`、`account-switch-1.0.0-release.apk`、`app/build/release/account-switch-release.apk`），现只保留构建输出 `app/build/account-switch-release.apk` 一份；`build.py --release` 不再向 `release/` 复制 APK（该目录只放密钥与口令），并删除旧的 0.15.1/0.15.2 版本化副本。
 - 补充（23:14）：构建目录收口。签名关闭 v4（不再生成 `.idsig`），构建结束后自动删除 `res.zip`/`unsigned.apk`/`aligned.apk` 中间产物；`app/build/` 现在只剩 `account-switch.apk`（调试、手机在用）与 `account-switch-release.apk`（唯一正式包）两个 APK。
+- 补充（23:20）：密钥回归项目目录。正式密钥与口令从 `app/build/release/` 移到 `app/keystore/`（`hoyoswitch-release.p12`、`keystore.txt`），`build.py` 改读该路径，`.gitignore` 增加 `/app/keystore/` 避免密钥进仓库；同时删除用户目录下的外部备份 `%USERPROFILE%\HoyoSwitch-release\`。重新构建正式包验证签名不变（SHA-256 `81a5fc64…f9079`）。
 
 ## 2026-11-19 第八轮：新数据代复验，4 文件切换可复现
 

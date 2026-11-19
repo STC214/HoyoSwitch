@@ -3,3 +3,4 @@
 /app/build/
 __pycache__/
 *.pyc
+/app/keystore/
