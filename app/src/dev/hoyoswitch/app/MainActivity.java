@@ -5,8 +5,11 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -43,6 +46,7 @@ public final class MainActivity extends Activity {
     private SnapshotStore store;
     private GameProfile game = GameProfile.STARRAIL;
     private TextView statusView;
+    private TextView logSection;
     private EditText nameInput;
     private LinearLayout cardList;
     private TextView logView;
@@ -201,7 +205,14 @@ public final class MainActivity extends Activity {
         headerRow.setGravity(Gravity.CENTER_VERTICAL);
 
         ImageView avatar = new ImageView(this);
-        avatar.setImageResource(R.drawable.app_icon);
+        // The source icon is 1650px; decode a small copy instead of a ~11 MB bitmap.
+        BitmapFactory.Options avatarOptions = new BitmapFactory.Options();
+        avatarOptions.inSampleSize = 8;
+        android.graphics.Bitmap avatarBitmap =
+                BitmapFactory.decodeResource(getResources(), R.drawable.app_icon, avatarOptions);
+        if (avatarBitmap != null) {
+            avatar.setImageBitmap(avatarBitmap);
+        }
         GradientDrawable avatarBg = new GradientDrawable();
         avatarBg.setColor(getColor(R.color.card_bg));
         avatarBg.setCornerRadius(dp(18));
@@ -275,16 +286,26 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, 0, 0, dp(8));
 
         content.addView(section("01 / 游戏分栏"), matchWrap());
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setBackground(surface(R.color.card_bg, R.color.card_bg, 26));
         tabs.setPadding(dp(8), dp(8), dp(8), dp(8));
-        for (GameProfile profile : GameProfile.ALL) {
+        int tabCount = GameProfile.ALL.size();
+        for (int index = 0; index < tabCount; index++) {
+            GameProfile profile = GameProfile.ALL.get(index);
             Button tab = pill(profile.label, false);
+            tab.setSingleLine(true);
+            tab.setEllipsize(android.text.TextUtils.TruncateAt.END);
             tab.setOnClickListener(view -> selectGame(profile));
-            tabs.addView(tab, weightWrap(1f, dp(3)));
+            LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (index > 0) {
+                tabParams.leftMargin = dp(6);
+            }
+            tabs.addView(tab, tabParams);
             gameButtons.add(tab);
         }
         content.addView(tabs, withBottomMargin(matchWrap(), dp(4)));
@@ -299,8 +320,11 @@ public final class MainActivity extends Activity {
         nameInput = new EditText(this);
         nameInput.setHint("账号名称（可选）");
         nameInput.setTextSize(14);
-        nameInput.setBackground(null);
-        controlCard.addView(nameInput, withBottomMargin(matchWrap(), dp(8)));
+        nameInput.setTextColor(getColor(R.color.text_primary));
+        nameInput.setHintTextColor(getColor(R.color.text_muted));
+        nameInput.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        nameInput.setPadding(dp(14), dp(10), dp(14), dp(10));
+        controlCard.addView(nameInput, withBottomMargin(matchWrap(), dp(10)));
 
         LinearLayout primaryRow = new LinearLayout(this);
         primaryRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -339,10 +363,12 @@ public final class MainActivity extends Activity {
         cardList.setOrientation(LinearLayout.VERTICAL);
         content.addView(cardList, matchWrap());
 
-        content.addView(section("04 / 操作日志"), matchWrap());
+        logSection = section("04 / 操作日志");
+        content.addView(logSection, matchWrap());
         logView = new TextView(this);
         logView.setTextSize(11);
         logView.setTextColor(getColor(R.color.text_muted));
+        logView.setLineSpacing(dp(2), 1f);
         logScroll = new ScrollView(this);
         logScroll.addView(logView);
         logScroll.setBackground(surface(R.color.log_bg, R.color.log_bg, 22));
@@ -362,7 +388,7 @@ public final class MainActivity extends Activity {
         view.setTextSize(11);
         view.setTextColor(getColor(R.color.text_muted));
         view.setLetterSpacing(0.08f);
-        view.setPadding(0, dp(18), 0, dp(8));
+        view.setPadding(0, dp(18), 0, dp(10));
         return view;
     }
 
@@ -373,17 +399,24 @@ public final class MainActivity extends Activity {
         button.setTextSize(14);
         button.setTypeface(null, Typeface.BOLD);
         button.setTextColor(getColor(primary ? R.color.on_accent : R.color.accent));
-        button.setBackground(surface(primary ? R.color.accent : R.color.accent_tonal,
-                primary ? R.color.accent : R.color.accent_tonal, 24));
+        GradientDrawable fill = surface(primary ? R.color.accent : R.color.accent_tonal,
+                primary ? R.color.accent : R.color.accent_tonal, 24);
+        button.setBackground(ripple(fill));
         button.setMinHeight(dp(48));
         button.setMinWidth(0);
         button.setPadding(dp(12), 0, dp(12), 0);
         return button;
     }
 
+    private RippleDrawable ripple(GradientDrawable content) {
+        int color = (getColor(R.color.text_primary) & 0x00FFFFFF) | 0x22000000;
+        return new RippleDrawable(ColorStateList.valueOf(color), content, null);
+    }
+
     private String currentVersion() {
         try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            return version == null || version.isEmpty() ? "0.0" : version;
         } catch (PackageManager.NameNotFoundException error) {
             return "0.0";
         }
@@ -395,6 +428,9 @@ public final class MainActivity extends Activity {
         }
         boolean visible = logScroll.getVisibility() == View.VISIBLE;
         logScroll.setVisibility(visible ? View.GONE : View.VISIBLE);
+        if (logSection != null) {
+            logSection.setVisibility(visible ? View.GONE : View.VISIBLE);
+        }
         logToggle.setText(visible ? "显示日志" : "隐藏日志");
     }
 
@@ -417,10 +453,6 @@ public final class MainActivity extends Activity {
 
     private static LinearLayout.LayoutParams weightWrap() {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-    }
-
-    private static LinearLayout.LayoutParams weightWrap(float weight) {
-        return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
     }
 
     private static LinearLayout.LayoutParams weightWrap(float weight, int sideMargin) {
@@ -482,7 +514,9 @@ public final class MainActivity extends Activity {
                 statusView.setText(rootText + " · " + gameText + " · "
                         + (runningNow ? "游戏运行中" : "游戏已停止") + accountText);
                 captureButton.setEnabled(rootedNow && selected.supported && !runningNow && !busy);
+                captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
                 launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
+                launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
                 renderTabs();
                 renderCards(listed, matched == null ? null : matched.id, selected);
             });
@@ -499,9 +533,10 @@ public final class MainActivity extends Activity {
             button.setAlpha(profile.supported ? 1f : 0.55f);
             button.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
             button.setTextColor(getColor(selected ? R.color.on_accent : R.color.text_muted));
-            button.setBackground(selected
+            GradientDrawable tabFill = selected
                     ? surface(R.color.accent, R.color.accent, 20)
-                    : surface(R.color.card_bg, R.color.card_bg, 20));
+                    : surface(R.color.card_bg, R.color.card_bg, 20);
+            button.setBackground(ripple(tabFill));
         }
     }
 
@@ -539,14 +574,18 @@ public final class MainActivity extends Activity {
         if (!selected.supported) {
             TextView unsupported = new TextView(this);
             unsupported.setText(selected.label + " 尚未适配：状态文件清单还在调研，暂不能拍摄或切换。");
-            unsupported.setPadding(0, 24, 0, 0);
+            unsupported.setTextSize(13);
+            unsupported.setTextColor(getColor(R.color.text_muted));
+            unsupported.setPadding(0, dp(20), 0, 0);
             cardList.addView(unsupported, matchWrap());
             return;
         }
         if (snapshots.isEmpty()) {
             TextView empty = new TextView(this);
             empty.setText("这个分栏还没有快照。登录 " + selected.label + " 后停止游戏，点「拍摄快照」。");
-            empty.setPadding(0, 24, 0, 0);
+            empty.setTextSize(13);
+            empty.setTextColor(getColor(R.color.text_muted));
+            empty.setPadding(0, dp(20), 0, 0);
             cardList.addView(empty, matchWrap());
             return;
         }
@@ -566,6 +605,11 @@ public final class MainActivity extends Activity {
             label.setText(isCurrent ? snapshot.name + "　（当前登录）" : snapshot.name);
             label.setTextSize(18);
             label.setTextColor(getColor(R.color.text_primary));
+            label.setMaxLines(2);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            if (Build.VERSION.SDK_INT >= 28) {
+                label.setAccessibilityHeading(true);
+            }
             card.addView(label, matchWrap());
 
             TextView meta = new TextView(this);
