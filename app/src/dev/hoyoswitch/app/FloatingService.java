@@ -23,11 +23,14 @@ import android.widget.Toast;
 public final class FloatingService extends Service {
     private static final String CHANNEL = "floating";
     private static final int NOTIFICATION_ID = 1;
+    static final String EXTRA_PACKAGE = "pkg";
     private static boolean running;
 
     static boolean isRunning() {
         return running;
     }
+
+    private GameProfile game = GameProfile.STARRAIL;
 
     private WindowManager windowManager;
     private View button;
@@ -49,6 +52,9 @@ public final class FloatingService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.hasExtra(EXTRA_PACKAGE)) {
+            game = GameProfile.byPackage(intent.getStringExtra(EXTRA_PACKAGE));
+        }
         return START_STICKY;
     }
 
@@ -79,7 +85,7 @@ public final class FloatingService extends Service {
             manager.createNotificationChannel(channel);
         }
         Notification notification = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("账号切换")
+                .setContentTitle("账号切换 · " + game.label)
                 .setContentText("悬浮按钮已开启：切换后点它更新快照")
                 .setSmallIcon(android.R.drawable.ic_menu_save)
                 .setOngoing(true)
@@ -155,7 +161,8 @@ public final class FloatingService extends Service {
         final SnapshotStore store = new SnapshotStore(this);
         new Thread(() -> {
             try {
-                String id = AccountUpdater.updateCurrent(store, message -> Log.i("hoyoswitch", message));
+                String id = AccountUpdater.updateCurrent(store, game,
+                        message -> Log.i("hoyoswitch", message));
                 toast("已更新快照 " + id);
             } catch (Exception error) {
                 toast("更新失败：" + error.getMessage());

@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -23,22 +24,26 @@ import android.widget.Toast;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-/** Single-screen prototype: status, capture, account cards, switch. */
+/** One screen, one section per game: status, capture and account cards for the selected game. */
 public final class MainActivity extends Activity {
     private interface Op {
         void run() throws Exception;
     }
 
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final List<Button> gameButtons = new ArrayList<>();
     private SnapshotStore store;
+    private GameProfile game = GameProfile.STARRAIL;
     private TextView statusView;
     private EditText nameInput;
     private LinearLayout cardList;
     private TextView logView;
+    private ScrollView logScroll;
     private Button captureButton;
     private Button launchButton;
     private volatile boolean busy;
@@ -73,6 +78,17 @@ public final class MainActivity extends Activity {
         statusView.setPadding(0, pad / 2, 0, pad / 2);
         root.addView(statusView, matchWrap());
 
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setOrientation(LinearLayout.HORIZONTAL);
+        for (GameProfile profile : GameProfile.ALL) {
+            Button tab = new Button(this);
+            tab.setText(profile.label);
+            tab.setOnClickListener(view -> selectGame(profile));
+            tabs.addView(tab, weightWrap());
+            gameButtons.add(tab);
+        }
+        root.addView(tabs, matchWrap());
+
         nameInput = new EditText(this);
         nameInput.setHint("账号名称（可选）");
         root.addView(nameInput, matchWrap());
@@ -84,7 +100,7 @@ public final class MainActivity extends Activity {
         captureButton.setOnClickListener(view -> capture());
         launchButton = new Button(this);
         launchButton.setText("启动游戏");
-        launchButton.setOnClickListener(view -> runOp("启动游戏", StarRailProfile::launch));
+        launchButton.setOnClickListener(view -> runOp("启动 " + game.label, game::launch));
         Button refreshButton = new Button(this);
         refreshButton.setText("刷新");
         refreshButton.setOnClickListener(view -> refresh());
@@ -93,16 +109,13 @@ public final class MainActivity extends Activity {
         actions.addView(refreshButton, weightWrap());
         root.addView(actions, matchWrap());
 
-        LinearLayout extra = new LinearLayout(this);
-        extra.setOrientation(LinearLayout.HORIZONTAL);
         Button floatingButton = new Button(this);
         floatingButton.setText("悬浮按钮");
         floatingButton.setOnClickListener(view -> toggleFloating());
-        extra.addView(floatingButton, weightWrap());
-        root.addView(extra, matchWrap());
+        root.addView(floatingButton, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("拍摄与切换前请先停止游戏；切换只写 4 个文件并自动备份。"
+        hint.setText("拍摄与切换前请先停止游戏；切换只写该游戏的账号文件并自动备份。"
                 + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」，或用悬浮按钮刷新当前账号。");
         hint.setTextSize(12);
         hint.setPadding(0, pad / 2, 0, pad / 2);
@@ -118,17 +131,14 @@ public final class MainActivity extends Activity {
 
         logView = new TextView(this);
         logView.setTextSize(12);
-        ScrollView logScroll = new ScrollView(this);
+        logScroll = new ScrollView(this);
         logScroll.addView(logView);
         logScroll.setPadding(0, pad / 2, 0, 0);
         int logHeight = (int) (60 * getResources().getDisplayMetrics().density);
         root.addView(logScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, logHeight));
-        logScrollRef = logScroll;
         return root;
     }
-
-    private ScrollView logScrollRef;
 
     private static LinearLayout.LayoutParams matchWrap() {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -143,7 +153,17 @@ public final class MainActivity extends Activity {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
     }
 
+    private void selectGame(GameProfile profile) {
+        if (busy || profile == game) {
+            return;
+        }
+        game = profile;
+        appendLog("切换到分栏：" + profile.label);
+        refresh();
+    }
+
     private void refresh() {
+        final GameProfile selected = game;
         new Thread(() -> {
             boolean rooted = RootShell.isRooted();
             boolean running;
@@ -151,15 +171,15 @@ public final class MainActivity extends Activity {
             List<SnapshotStore.Snapshot> snapshots;
             SnapshotStore.Current current;
             try {
-                running = StarRailProfile.isRunning();
-                version = StarRailProfile.version();
+                running = selected.isRunning();
+                version = selected.version();
             } catch (IOException error) {
                 running = false;
                 version = "";
             }
-            snapshots = store.list();
+            snapshots = store.list(selected);
             try {
-                current = store.detectCurrent();
+                current = store.detectCurrent(selected);
             } catch (IOException error) {
                 current = null;
             }
@@ -171,14 +191,32 @@ public final class MainActivity extends Activity {
             main.post(() -> {
                 SnapshotStore.Snapshot matched = match(currentNow, listed);
                 String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
-                String gameText = versionNow.isEmpty() ? "未检测到星铁" : "星铁 " + versionNow;
+                String gameText = versionNow.isEmpty()
+                        ? "未检测到" + selected.label
+                        : selected.label + " " + versionNow;
+                String accountText = selected.supported
+                        ? " · 当前账号：" + describe(currentNow, matched)
+                        : " · 尚未适配";
                 statusView.setText(rootText + " · " + gameText + " · "
-                        + (runningNow ? "游戏运行中" : "游戏已停止")
-                        + " · 当前账号：" + describe(currentNow, matched));
-                captureButton.setEnabled(rootedNow && !runningNow && !busy);
-                renderCards(listed, matched == null ? null : matched.id);
+                        + (runningNow ? "游戏运行中" : "游戏已停止") + accountText);
+                captureButton.setEnabled(rootedNow && selected.supported && !runningNow && !busy);
+                launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
+                renderTabs();
+                renderCards(listed, matched == null ? null : matched.id, selected);
             });
         }).start();
+    }
+
+    private void renderTabs() {
+        for (int index = 0; index < gameButtons.size(); index++) {
+            Button button = gameButtons.get(index);
+            GameProfile profile = GameProfile.ALL.get(index);
+            boolean selected = profile == game;
+            button.setText(profile.label + (profile.supported ? "" : "（未适配）"));
+            button.setTypeface(null, selected ? android.graphics.Typeface.BOLD
+                    : android.graphics.Typeface.NORMAL);
+            button.setTextColor(selected ? Color.parseColor("#0B57D0") : Color.DKGRAY);
+        }
     }
 
     private SnapshotStore.Snapshot match(SnapshotStore.Current current,
@@ -209,11 +247,19 @@ public final class MainActivity extends Activity {
                 : "已登录，但不在任何快照中";
     }
 
-    private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId) {
+    private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
+                             GameProfile selected) {
         cardList.removeAllViews();
+        if (!selected.supported) {
+            TextView unsupported = new TextView(this);
+            unsupported.setText(selected.label + " 尚未适配：状态文件清单还在调研，暂不能拍摄或切换。");
+            unsupported.setPadding(0, 24, 0, 0);
+            cardList.addView(unsupported, matchWrap());
+            return;
+        }
         if (snapshots.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("还没有快照。登录游戏后停止游戏，点「拍摄快照」。");
+            empty.setText("这个分栏还没有快照。登录 " + selected.label + " 后停止游戏，点「拍摄快照」。");
             empty.setPadding(0, 24, 0, 0);
             cardList.addView(empty, matchWrap());
             return;
@@ -269,12 +315,12 @@ public final class MainActivity extends Activity {
         appendLog("准备切换到 " + target.name);
         new Thread(() -> {
             try {
-                if (StarRailProfile.isRunning()) {
-                    StarRailProfile.forceStop();
-                    appendLog("已停止游戏");
+                if (target.game.isRunning()) {
+                    target.game.forceStop();
+                    appendLog("已停止" + target.game.label);
                 }
-                SnapshotStore.Current current = store.detectCurrent();
-                List<SnapshotStore.Snapshot> snapshots = store.list();
+                SnapshotStore.Current current = store.detectCurrent(target.game);
+                List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
                 main.post(() -> askSwitch(target, currentLabel));
             } catch (Exception error) {
@@ -287,10 +333,10 @@ public final class MainActivity extends Activity {
 
     private void askSwitch(SnapshotStore.Snapshot target, String currentLabel) {
         new AlertDialog.Builder(this)
-                .setTitle("切换账号")
+                .setTitle("切换" + target.game.label + "账号")
                 .setMessage("当前账号：" + currentLabel
                         + "\n目标账号：" + target.name
-                        + "\n\n将写入 4 个账号文件，并自动保存切换前状态。继续？")
+                        + "\n\n将写入该游戏的 4 个账号文件，并自动保存切换前状态。继续？")
                 .setNegativeButton("取消", (dialog, which) -> {
                     busy = false;
                     refresh();
@@ -311,7 +357,7 @@ public final class MainActivity extends Activity {
     private void capture() {
         String name = nameInput.getText().toString();
         runOp("拍摄快照", () -> {
-            String id = store.capture(name);
+            String id = store.capture(game, name);
             appendLog("已保存快照 " + id);
             main.post(() -> nameInput.setText(""));
         });
@@ -333,8 +379,10 @@ public final class MainActivity extends Activity {
             stopService(new Intent(this, FloatingService.class));
             toast("悬浮按钮已关闭");
         } else {
-            startForegroundService(new Intent(this, FloatingService.class));
-            toast("悬浮按钮已开启：可拖动，点它更新快照");
+            Intent intent = new Intent(this, FloatingService.class);
+            intent.putExtra(FloatingService.EXTRA_PACKAGE, game.pkg);
+            startForegroundService(intent);
+            toast("悬浮按钮已开启（" + game.label + "）：可拖动，点它更新快照");
         }
     }
 
@@ -363,14 +411,8 @@ public final class MainActivity extends Activity {
             String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
             String text = logView.getText().toString();
             String line = time + "  " + message;
-            if (text.isEmpty()) {
-                logView.setText(line);
-            } else {
-                logView.setText(text + "\n" + line);
-            }
-            if (logScrollRef != null) {
-                logScrollRef.post(() -> logScrollRef.fullScroll(View.FOCUS_DOWN));
-            }
+            logView.setText(text.isEmpty() ? line : text + "\n" + line);
+            logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         });
     }
 

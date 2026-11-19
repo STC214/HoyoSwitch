@@ -20,7 +20,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,8 +27,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Captures and restores the StarRail state files. Every write is preceded by a byte-exact
- * safety snapshot and verified by re-reading the device; a failed verification rolls back.
+ * Per-game snapshots of the state files. Every write is preceded by a byte-exact safety snapshot
+ * and verified by re-reading the device; a failed verification rolls back.
  */
 final class SnapshotStore {
     static final class Entry {
@@ -45,6 +44,7 @@ final class SnapshotStore {
     }
 
     static final class Snapshot {
+        GameProfile game;
         String id;
         String name;
         long createdAt;
@@ -56,9 +56,6 @@ final class SnapshotStore {
         }
     }
 
-    private static final String MANIFEST = "manifest.json";
-    private static final int VERSION = 1;
-
     /** What the device currently looks like, identified without displaying account ids. */
     static final class Current {
         boolean loggedIn;
@@ -66,106 +63,85 @@ final class SnapshotStore {
         String note = "";
     }
 
+    private static final String MANIFEST = "manifest.json";
+    private static final int VERSION = 1;
+
     private final File root;
 
     SnapshotStore(Context context) {
         root = new File(context.getFilesDir(), "snapshots");
+        migrateLegacyLayout();
+    }
+
+    /**
+     * Snapshots used to live directly under {@code snapshots/}. Move them into the per-game
+     * directory once, so older captures keep showing up in their game section.
+     */
+    private void migrateLegacyLayout() {
+        File[] children = root.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File child : children) {
+            if (!child.isDirectory() || !new File(child, MANIFEST).isFile()) {
+                continue;
+            }
+            String pkg = GameProfile.STARRAIL.pkg;
+            try {
+                JSONObject manifest = new JSONObject(new String(readLocal(new File(child, MANIFEST)),
+                        StandardCharsets.UTF_8));
+                pkg = manifest.optString("package", pkg);
+            } catch (IOException | JSONException ignored) {
+                // Fall back to the only game that had snapshots before the split.
+            }
+            File destination = new File(new File(root, pkg), child.getName());
+            File parent = destination.getParentFile();
+            if (parent != null && (parent.isDirectory() || parent.mkdirs())
+                    && !destination.exists() && child.renameTo(destination)) {
+                continue;
+            }
+            // Leave it in place when the move fails; it simply will not be listed.
+        }
+    }
+
+    private File dirFor(GameProfile game) {
+        return new File(root, game.pkg);
     }
 
     File fileOf(Snapshot snapshot, String relative) {
         return new File(new File(snapshot.dir, "files"), relative);
     }
 
-    /**
-     * Identifies the account the client is currently on. Hashes cannot be used here: the client
-     * rewrites token, SDK prefs and the database timestamp on every launch. The account id is
-     * taken from the widget cache, which the account module refreshes after each login.
-     */
-    Current detectCurrent() throws IOException {
-        Current current = new Current();
-        byte[] prefs = readDevice(StarRailProfile.path("shared_prefs/porte_sdk_account_PRODUCT.xml"));
-        if (prefs == null) {
-            current.note = "读不到登录状态文件";
-            return current;
+    String capture(GameProfile game, String name) throws IOException {
+        if (!game.supported) {
+            throw new IOException(game.label + " 尚未适配，不能拍摄快照");
         }
-        if (!"true".equals(preferenceValue(prefs, "boolean", "login_status"))) {
-            return current;
-        }
-        current.loggedIn = true;
-        byte[] widget = readDevice(StarRailProfile.path("shared_prefs/combo_widget.xml"));
-        String account = widget == null ? null : preferenceValue(widget, "string", "account");
-        if (account != null) {
-            current.mid = accountField(account, "mid");
-        }
-        if (current.mid.isEmpty()) {
-            current.note = "已登录，但读不到账号标识";
-        }
-        return current;
-    }
-
-    /** Account id stored in a snapshot's widget cache; empty when unreadable. */
-    String accountMid(Snapshot snapshot) {
-        try {
-            byte[] widget = readLocal(fileOf(snapshot, "shared_prefs/combo_widget.xml"));
-            String account = preferenceValue(widget, "string", "account");
-            return account == null ? "" : accountField(account, "mid");
-        } catch (IOException error) {
-            return "";
-        }
-    }
-
-    private static String preferenceValue(byte[] xml, String tag, String name) throws IOException {
-        try {
-            XmlPullParser parser = Xml.newPullParser();
-            parser.setInput(new ByteArrayInputStream(xml), "UTF-8");
-            int event;
-            while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
-                if (event == XmlPullParser.START_TAG && tag.equals(parser.getName())
-                        && name.equals(parser.getAttributeValue(null, "name"))) {
-                    if ("boolean".equals(tag)) {
-                        return parser.getAttributeValue(null, "value");
-                    }
-                    return parser.nextText();
-                }
-            }
-        } catch (XmlPullParserException error) {
-            throw new IOException("解析偏好文件失败", error);
-        }
-        return null;
-    }
-
-    private static String accountField(String json, String field) {
-        try {
-            String value = new JSONObject(json).optString(field, "");
-            return value == null ? "" : value;
-        } catch (JSONException error) {
-            return "";
-        }
-    }
-
-    String capture(String name) throws IOException {
-        if (StarRailProfile.isRunning()) {
+        if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再拍摄快照");
         }
+        File base = dirFor(game);
+        if (!base.isDirectory() && !base.mkdirs()) {
+            throw new IOException("无法创建快照目录: " + base);
+        }
         String id = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        File dir = new File(root, id);
+        File dir = new File(base, id);
         int suffix = 0;
         while (dir.exists()) {
             suffix++;
-            dir = new File(root, id + "-" + suffix);
+            dir = new File(base, id + "-" + suffix);
         }
         if (!dir.mkdirs()) {
             throw new IOException("无法创建快照目录: " + dir);
         }
         Snapshot snapshot = new Snapshot();
+        snapshot.game = game;
         snapshot.id = dir.getName();
         snapshot.name = name == null || name.trim().isEmpty() ? snapshot.id : name.trim();
         snapshot.createdAt = System.currentTimeMillis();
         snapshot.dir = dir;
         try {
-            for (String relative : StarRailProfile.FILES) {
-                Entry entry = captureOne(snapshot, relative);
-                snapshot.entries.put(relative, entry);
+            for (String relative : game.files) {
+                snapshot.entries.put(relative, captureOne(game, snapshot, relative));
             }
             saveManifest(snapshot);
         } catch (IOException error) {
@@ -175,14 +151,12 @@ final class SnapshotStore {
         return snapshot.id;
     }
 
-    private Entry captureOne(Snapshot snapshot, String relative) throws IOException {
+    private Entry captureOne(GameProfile game, Snapshot snapshot, String relative) throws IOException {
         Entry entry = new Entry();
         entry.path = relative;
-        String path = StarRailProfile.path(relative);
+        String path = game.path(relative);
         RootShell.Result content = RootShell.run("cat " + quote(path));
         if (content.code != 0) {
-            android.util.Log.w("hoyoswitch", "cat failed for " + relative + " code=" + content.code
-                    + " err=" + content.err);
             entry.present = false;
             return entry;
         }
@@ -209,53 +183,108 @@ final class SnapshotStore {
         return entry;
     }
 
-    List<Snapshot> list() {
+    List<Snapshot> list(GameProfile game) {
         List<Snapshot> snapshots = new ArrayList<>();
-        File[] children = root.listFiles();
+        File[] children = dirFor(game).listFiles();
         if (children == null) {
             return snapshots;
         }
         for (File child : children) {
-            File manifest = new File(child, MANIFEST);
-            if (!child.isDirectory() || !manifest.isFile()) {
+            if (!child.isDirectory() || !new File(child, MANIFEST).isFile()) {
                 continue;
             }
             try {
-                Snapshot snapshot = readManifest(child);
-                snapshots.add(snapshot);
+                snapshots.add(readManifest(game, child));
             } catch (IOException | JSONException ignored) {
-                // A damaged snapshot is skipped here; verify() reports it when opened.
+                // Damaged snapshots are skipped here; verify() reports them when opened.
             }
         }
         snapshots.sort((left, right) -> Long.compare(right.createdAt, left.createdAt));
         return snapshots;
     }
 
-    Snapshot load(String id) throws IOException {
-        File dir = new File(root, id);
+    Snapshot load(GameProfile game, String id) throws IOException {
         try {
-            return readManifest(dir);
+            return readManifest(game, new File(dirFor(game), id));
         } catch (JSONException error) {
             throw new IOException("快照清单损坏: " + id, error);
         }
     }
 
     /**
+     * Identifies the account the client is currently on. Hashes cannot be used here: the client
+     * rewrites token, SDK prefs and the database timestamp on every launch.
+     */
+    Current detectCurrent(GameProfile game) throws IOException {
+        Current current = new Current();
+        if (!game.supported) {
+            return current;
+        }
+        String statusPath = null;
+        for (String relative : game.files) {
+            if (relative.endsWith("porte_sdk_account_PRODUCT.xml")) {
+                statusPath = relative;
+                break;
+            }
+        }
+        if (statusPath == null) {
+            return current;
+        }
+        byte[] prefs = readDevice(game.path(statusPath));
+        if (prefs == null) {
+            current.note = "读不到登录状态文件";
+            return current;
+        }
+        if (!"true".equals(preferenceValue(prefs, "boolean", "login_status"))) {
+            return current;
+        }
+        current.loggedIn = true;
+        for (String relative : game.files) {
+            if (relative.endsWith("combo_widget.xml")) {
+                byte[] widget = readDevice(game.path(relative));
+                String account = widget == null ? null : preferenceValue(widget, "string", "account");
+                if (account != null) {
+                    current.mid = accountField(account, "mid");
+                }
+                break;
+            }
+        }
+        if (current.mid.isEmpty()) {
+            current.note = "已登录，但读不到账号标识";
+        }
+        return current;
+    }
+
+    /** Account id stored in a snapshot's widget cache; empty when unreadable. */
+    String accountMid(Snapshot snapshot) {
+        for (String relative : snapshot.game.files) {
+            if (!relative.endsWith("combo_widget.xml")) {
+                continue;
+            }
+            try {
+                byte[] widget = readLocal(fileOf(snapshot, relative));
+                String account = preferenceValue(widget, "string", "account");
+                return account == null ? "" : accountField(account, "mid");
+            } catch (IOException error) {
+                return "";
+            }
+        }
+        return "";
+    }
+
+    /**
      * Re-captures the device state into an existing snapshot, keeping its id and name so the
-     * account card stays in place. The client rewrites token, SDK prefs and the database
-     * timestamp on every launch, so a snapshot has to be refreshed after a real login.
+     * account card stays in place.
      */
     String updateSnapshot(Snapshot target) throws IOException {
-        String tempId = capture(target.name);
-        File temp = new File(root, tempId);
+        String tempId = capture(target.game, target.name);
+        File temp = new File(dirFor(target.game), tempId);
         deleteRecursively(target.dir);
         if (!temp.renameTo(target.dir)) {
             throw new IOException("无法替换旧快照目录: " + target.id);
         }
         try {
-            // The fresh capture carries the temporary id; rewrite it so the manifest matches the
-            // directory the card is bound to.
-            Snapshot refreshed = readManifest(target.dir);
+            Snapshot refreshed = readManifest(target.game, target.dir);
             refreshed.id = target.id;
             refreshed.name = target.name;
             saveManifest(refreshed);
@@ -265,25 +294,25 @@ final class SnapshotStore {
         return target.id;
     }
 
-    /** Restores the four switch files of {@code target}, with safety snapshot and rollback. */
+    /** Restores the switch files of {@code target}, with safety snapshot and rollback. */
     void switchTo(Snapshot target, boolean launchAfterwards, Progress progress) throws IOException {
-        if (StarRailProfile.isRunning()) {
+        GameProfile game = target.game;
+        if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再切换");
         }
-        String safetyId = capture("切换前自动备份");
+        String safetyId = capture(game, "切换前自动备份");
         progress.report("已保存切换前状态: " + safetyId);
         try {
-            for (String relative : StarRailProfile.SWITCH_FILES) {
+            for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
                 if (entry == null || !entry.present) {
                     continue;
                 }
-                File local = fileOf(target, relative);
-                byte[] data = readLocal(local);
+                byte[] data = readLocal(fileOf(target, relative));
                 if (!sha256(data).equals(entry.sha256)) {
                     throw new IOException("快照文件已损坏: " + relative);
                 }
-                String path = StarRailProfile.path(relative);
+                String path = game.path(relative);
                 byte[] current = readDevice(path);
                 if (current != null && sha256(current).equals(entry.sha256)) {
                     progress.report("跳过（已一致）: " + relative);
@@ -293,23 +322,23 @@ final class SnapshotStore {
                 verifyWritten(path, entry);
                 progress.report("已写入并校验: " + relative);
             }
-            for (String relative : StarRailProfile.SWITCH_FILES) {
+            for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
                 if (entry == null || !entry.present) {
                     continue;
                 }
-                byte[] current = readDevice(StarRailProfile.path(relative));
+                byte[] current = readDevice(game.path(relative));
                 if (current == null || !sha256(current).equals(entry.sha256)) {
                     throw new IOException("切换后校验失败: " + relative);
                 }
             }
             progress.report("切换完成，所有文件校验一致");
             if (launchAfterwards) {
-                StarRailProfile.launch();
+                game.launch();
                 progress.report("已请求启动游戏");
             }
         } catch (IOException failure) {
-            Snapshot safety = load(safetyId);
+            Snapshot safety = load(game, safetyId);
             try {
                 restoreAll(safety, progress);
                 throw new IOException(failure.getMessage() + "；已回滚到切换前状态", failure);
@@ -320,9 +349,10 @@ final class SnapshotStore {
         }
     }
 
-    /** Restores every present file of {@code snapshot}; used by rollback and by explicit restore. */
+    /** Restores every present file of {@code snapshot}; used by rollback. */
     void restoreAll(Snapshot snapshot, Progress progress) throws IOException {
-        if (StarRailProfile.isRunning()) {
+        GameProfile game = snapshot.game;
+        if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再恢复");
         }
         for (Map.Entry<String, Entry> item : snapshot.entries.entrySet()) {
@@ -330,7 +360,7 @@ final class SnapshotStore {
             if (!entry.present) {
                 continue;
             }
-            String path = StarRailProfile.path(entry.path);
+            String path = game.path(entry.path);
             byte[] current = readDevice(path);
             if (current != null && sha256(current).equals(entry.sha256)) {
                 continue;
@@ -423,7 +453,7 @@ final class SnapshotStore {
             root.put("id", snapshot.id);
             root.put("name", snapshot.name);
             root.put("createdAt", snapshot.createdAt);
-            root.put("package", StarRailProfile.PACKAGE);
+            root.put("package", snapshot.game.pkg);
             JSONArray files = new JSONArray();
             for (Entry entry : snapshot.entries.values()) {
                 JSONObject item = new JSONObject();
@@ -450,12 +480,17 @@ final class SnapshotStore {
         }
     }
 
-    private Snapshot readManifest(File dir) throws IOException, JSONException {
+    private Snapshot readManifest(GameProfile game, File dir) throws IOException, JSONException {
         Snapshot snapshot = new Snapshot();
+        snapshot.game = game;
         snapshot.dir = dir;
         snapshot.id = dir.getName();
         JSONObject root = new JSONObject(new String(readLocal(new File(dir, MANIFEST)),
                 StandardCharsets.UTF_8));
+        String pkg = root.optString("package", "");
+        if (!pkg.isEmpty() && !pkg.equals(game.pkg)) {
+            throw new IOException("快照属于 " + pkg + "，不属于 " + game.pkg);
+        }
         snapshot.name = root.optString("name", snapshot.id);
         snapshot.createdAt = root.optLong("createdAt", dir.lastModified());
         JSONArray files = root.getJSONArray("files");
@@ -478,6 +513,35 @@ final class SnapshotStore {
 
     interface Progress {
         void report(String message);
+    }
+
+    private static String preferenceValue(byte[] xml, String tag, String name) throws IOException {
+        try {
+            XmlPullParser parser = Xml.newPullParser();
+            parser.setInput(new ByteArrayInputStream(xml), "UTF-8");
+            int event;
+            while ((event = parser.next()) != XmlPullParser.END_DOCUMENT) {
+                if (event == XmlPullParser.START_TAG && tag.equals(parser.getName())
+                        && name.equals(parser.getAttributeValue(null, "name"))) {
+                    if ("boolean".equals(tag)) {
+                        return parser.getAttributeValue(null, "value");
+                    }
+                    return parser.nextText();
+                }
+            }
+        } catch (XmlPullParserException error) {
+            throw new IOException("解析偏好文件失败", error);
+        }
+        return null;
+    }
+
+    private static String accountField(String json, String field) {
+        try {
+            String value = new JSONObject(json).optString(field, "");
+            return value == null ? "" : value;
+        } catch (JSONException error) {
+            return "";
+        }
     }
 
     static String sha256(byte[] data) {
