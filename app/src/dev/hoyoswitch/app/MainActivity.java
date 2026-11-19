@@ -626,7 +626,10 @@ public final class MainActivity extends Activity {
                 running = false;
                 version = "";
             }
-            store.cleanup(selected);
+            if (!busy) {
+                // Cleanup renames/deletes snapshot directories; skip it while an operation owns them.
+                store.cleanup(selected);
+            }
             snapshots = store.list(selected);
             try {
                 current = store.detectCurrent(selected);
