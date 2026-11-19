@@ -87,6 +87,19 @@ final class GameProfile {
 
     void forceStop() throws IOException {
         RootShell.checked("am force-stop --user 0 " + pkg);
+        // am returns before the process is gone; switching right after would see it as running.
+        for (int attempt = 0; attempt < 40; attempt++) {
+            if (!isRunning()) {
+                return;
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException("停止游戏被中断", error);
+            }
+        }
+        throw new IOException("停止" + label + "超时，请手动结束游戏后重试");
     }
 
     void launch() throws IOException {

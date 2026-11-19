@@ -160,9 +160,10 @@ final class SnapshotStore {
         snapshot.name = name == null || name.trim().isEmpty() ? snapshot.id : name.trim();
         snapshot.createdAt = System.currentTimeMillis();
         snapshot.dir = dir;
+        boolean live = game.isRunning();
         try {
             for (String relative : game.files) {
-                snapshot.entries.put(relative, captureOne(game, snapshot, relative));
+                snapshot.entries.put(relative, captureOne(game, snapshot, relative, live));
             }
             saveManifest(snapshot);
         } catch (IOException error) {
@@ -172,7 +173,8 @@ final class SnapshotStore {
         return snapshot.id;
     }
 
-    private Entry captureOne(GameProfile game, Snapshot snapshot, String relative) throws IOException {
+    private Entry captureOne(GameProfile game, Snapshot snapshot, String relative, boolean live)
+            throws IOException {
         Entry entry = new Entry();
         entry.path = relative;
         String path = game.path(relative);
@@ -181,9 +183,10 @@ final class SnapshotStore {
             entry.present = false;
             return entry;
         }
+        byte[] bytes = live ? stableRead(path, content.out) : content.out;
         entry.present = true;
-        entry.size = content.out.length;
-        entry.sha256 = sha256(content.out);
+        entry.size = bytes.length;
+        entry.sha256 = sha256(bytes);
         Entry metadata = stat(path);
         if (metadata != null) {
             entry.uid = metadata.uid;
@@ -197,11 +200,37 @@ final class SnapshotStore {
         if (parent != null && !parent.mkdirs() && !parent.isDirectory()) {
             throw new IOException("无法创建目录: " + parent);
         }
-        writeLocal(local, SnapshotCrypto.encrypt(content.out));
+        writeLocal(local, SnapshotCrypto.encrypt(bytes));
         if (!sha256(SnapshotCrypto.decrypt(readLocal(local))).equals(entry.sha256)) {
             throw new IOException("本地副本校验失败: " + relative);
         }
         return entry;
+    }
+
+    /**
+     * The game keeps rewriting some of these files while it runs. Re-read until two consecutive
+     * reads agree, so a capture taken during play does not archive a half-written file.
+     */
+    private byte[] stableRead(String path, byte[] first) throws IOException {
+        byte[] candidate = first;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            RootShell.Result again = RootShell.run("cat " + quote(path));
+            if (again.code != 0) {
+                break;
+            }
+            if (Arrays.equals(candidate, again.out)) {
+                return candidate;
+            }
+            candidate = again.out;
+        }
+        Log.i("hoyoswitch", "unstable read while game running: " + path);
+        return candidate;
     }
 
     List<Snapshot> list(GameProfile game) {
@@ -589,10 +618,10 @@ final class SnapshotStore {
         if (existing == null) {
             return capture(game, name);
         }
+        updateSnapshot(existing);
         if (name != null && !name.trim().isEmpty()) {
             rename(existing, name);
         }
-        updateSnapshot(existing);
         return existing.id;
     }
 
