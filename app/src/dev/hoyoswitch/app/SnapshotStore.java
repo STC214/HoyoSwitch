@@ -512,8 +512,10 @@ final class SnapshotStore {
                         readDevice(dbPath + "-wal"), readDevice(dbPath + "-shm"));
                 if (mid != null) {
                     // SQLite answered: either a concrete mid, or a genuinely empty table. An empty
-                    // table means logged out even when stale token keys remain in the prefs.
-                    if (!mid.isEmpty()) {
+                    // table means logged out even when stale token keys remain in the prefs. When
+                    // SQLite cannot open the (UTF-16) file and the byte scan is used instead, a
+                    // deleted account's remnant has no live token, so require that corroboration.
+                    if (!mid.isEmpty() && hasLiveToken(game, mid)) {
                         current.loggedIn = true;
                         current.mid = mid;
                     }
@@ -794,7 +796,35 @@ final class SnapshotStore {
         if (quote >= 0) {
             name = name.substring(0, quote);
         }
-        return name.trim();
+        // The key is "<mid>_mhy_porte_cookie_token_key", so the token's mid ends with "_mhy".
+        return name.trim() + "_mhy";
+    }
+
+    /** True when {@code xml} holds a token key for {@code mid}. */
+    private static boolean hasTokenKey(byte[] xml, String mid) {
+        if (mid == null || mid.isEmpty()) {
+            return false;
+        }
+        String text = new String(xml, StandardCharsets.UTF_8);
+        // The key is "<mid>_porte_cookie_token_key"; mid already ends with "_mhy".
+        return text.contains("name=\"" + mid + "_porte_cookie_token_key\"");
+    }
+
+    /**
+     * Whether {@code mid} still has a live token. A deleted account leaves no token, so a byte-scan
+     * remnant in the account database (which cannot be told apart from a live row without SQLite)
+     * is rejected when its token is gone.
+     */
+    private boolean hasLiveToken(GameProfile game, String mid) {
+        if (game.tokenPrefs == null) {
+            return true;
+        }
+        try {
+            byte[] token = readDevice(game.path(game.tokenPrefs));
+            return token != null && hasTokenKey(token, mid);
+        } catch (IOException error) {
+            return false;
+        }
     }
 
     /**
