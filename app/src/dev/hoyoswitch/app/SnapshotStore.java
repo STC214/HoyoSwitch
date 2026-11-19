@@ -168,8 +168,9 @@ final class SnapshotStore {
         long started = System.currentTimeMillis();
         // Each file needs its own root call; run them in parallel instead of one after another.
         ExecutorService pool = Executors.newFixedThreadPool(5);
+        List<Future<Entry>> futures = new ArrayList<>();
+        boolean complete = false;
         try {
-            List<Future<Entry>> futures = new ArrayList<>();
             for (String relative : game.files) {
                 boolean stable = live && game.switchFiles.contains(relative);
                 futures.add(pool.submit(() -> captureOne(game, snapshot, relative, stable)));
@@ -178,22 +179,32 @@ final class SnapshotStore {
                 snapshot.entries.put(game.files.get(index), futures.get(index).get());
             }
             saveManifest(snapshot);
+            complete = true;
         } catch (ExecutionException error) {
             Throwable cause = error.getCause();
-            deleteRecursively(dir);
             if (cause instanceof IOException) {
                 throw (IOException) cause;
             }
             throw new IOException("拍摄失败: " + cause, cause);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            deleteRecursively(dir);
             throw new IOException("拍摄被中断", error);
-        } catch (IOException error) {
-            deleteRecursively(dir);
-            throw error;
         } finally {
+            if (!complete) {
+                // Cancel first: deleting the directory while workers still write would leave files.
+                for (Future<Entry> future : futures) {
+                    future.cancel(true);
+                }
+            }
             pool.shutdownNow();
+            try {
+                pool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            if (!complete) {
+                deleteRecursively(dir);
+            }
         }
         Log.i("hoyoswitch", "capture " + snapshot.id + " took "
                 + (System.currentTimeMillis() - started) + " ms");

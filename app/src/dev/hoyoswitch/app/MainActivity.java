@@ -1144,10 +1144,8 @@ public final class MainActivity extends Activity {
             toast(selected.label + " 尚未适配，不能拍摄快照");
             return;
         }
-        if (!RootShell.isRooted()) {
-            toast("未取得 Root，无法拍摄快照");
-            return;
-        }
+        // Root state is already reflected in the button's enabled state; probing it here would
+        // block the UI thread on the first su lookup.
         captureNow(selected);
     }
 
