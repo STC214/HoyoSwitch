@@ -734,17 +734,13 @@ public final class MainActivity extends Activity {
         if (sortToggle != null) {
             sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
         }
-        if (sortMode == SORT_FIXED && fixedOrder.isEmpty()) {
-            // Seed the fixed order from the current last-used order so toggling is not jarring.
-            seedFixedOrder();
-        }
+        // No store access here: the fixed order is seeded from the already-fetched list in the
+        // next refresh, so the click callback can never block the main thread on the store lock.
         refresh();
     }
 
-    private void seedFixedOrder() {
-        List<SnapshotStore.Snapshot> snapshots = store.list(game);
-        // Seed from the current last-used order (descending activity time), independent of the
-        // now-active fixed sort mode.
+    /** Seeds the fixed order from an already-fetched list, ordered by descending activity time. */
+    private void seedFixedOrderFrom(List<SnapshotStore.Snapshot> snapshots) {
         snapshots.sort((left, right) -> Long.compare(activityTime(right), activityTime(left)));
         fixedOrder.clear();
         for (SnapshotStore.Snapshot snapshot : snapshots) {
@@ -974,7 +970,13 @@ public final class MainActivity extends Activity {
                 // Sort and fixed-order maintenance run here, on the main thread, so a stale
                 // background refresh can never overwrite the fixed order of a newer tab.
                 if (sortMode == SORT_FIXED) {
-                    ensureFixedOrder(listed);
+                    if (fixedOrder.isEmpty()) {
+                        // First entry into fixed mode: seed from this tab's current last-used
+                        // order, using the already-fetched list instead of touching the store.
+                        seedFixedOrderFrom(listed);
+                    } else {
+                        ensureFixedOrder(listed);
+                    }
                 }
                 sortSnapshots(listed);
                 SnapshotStore.Snapshot matched = match(currentNow, listed);
