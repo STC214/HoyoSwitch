@@ -314,3 +314,5 @@
 - 补充（14:00–14:10）：刷新路径 I/O 移出主线程，发布 1.5.7。后台线程预计算每张卡 \ccountMid\ 与 \decryptable\（\midById\/\eadableById\）随清单传回；主线程 \match()\ 与 \enderCards()\ 只消费预计算结果，不再逐卡调用 \store.accountMid\/\store.decryptable\；后台切换确认路径保留按需计算（二参重载）。真机验证状态正常。
 
 - 补充（14:20–14:30）：刷新链路与 PC 工具重构，发布 1.6.0。新增 \SnapshotStore.RefreshData\ 与 \eadRefreshData()\ 统一后台读取；\MainActivity\ 用 \displayedData\/\efreshInFlight\/\pageResumed\ 管理刷新生命周期；\FloatingService\ 增加快照观察者，悬浮更新后自动刷新对应分栏；PC 工具 \device.py\ 写入改临时文件+push+清理、\sidecar_issues\ 增 \pending_writes\。单测 33 通过，真机基本 UI 正常。
+
+- 补充（14:50–15:00）：加固（用户修复），发布 1.6.1。\GameProfile.launch()\ 校验 \m start -W\ 的 Status:ok；\SnapshotStore\ 回滚前整组校验、属主/权限元数据校验、DB 分帧解析更严格；PC 工具 \snapshot.py\ 的 \inspect_local\ 保留恢复字节并校验本地副本。单测 34 通过。

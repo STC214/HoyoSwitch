@@ -157,7 +157,6 @@ class SidecarIssuesTest(unittest.TestCase):
                     return mock.Mock(read_bytes=mock.Mock(return_value=payload[relative]))
 
                 with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
-                        mock.patch.object(snapshot, 'verify_local', return_value=[]), \
                         mock.patch.object(snapshot, 'capture', return_value='fixture'), \
                         mock.patch.object(snapshot, 'local_path', side_effect=local_path), \
                         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -180,6 +179,32 @@ class SidecarIssuesTest(unittest.TestCase):
                 mock.patch.object(snapshot, 'remote_state', return_value=[]), redirect_stderr(stderr):
             self.assertEqual(snapshot.command_verify(remote, mock.Mock(), True), 1)
         self.assertIn(f'{journal}: present but absent from snapshot', stderr.getvalue())
+
+
+class RestorePayloadTest(unittest.TestCase):
+    def test_restore_writes_the_exact_bytes_it_verified(self):
+        rel = 'shared_prefs/fixture.xml'
+        path = snapshot.DATA_DIR + '/' + rel
+        original, verified = b'original', b'verified'
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
+        entry = dict(path=rel, present=True, sha256=device.digest(verified), **metadata)
+        state = {path: original}
+        remote = mock.Mock()
+        remote.game_pids.return_value = []
+        remote.info.return_value = metadata
+        remote.read.side_effect = state.__getitem__
+        remote.write.side_effect = state.__setitem__
+        local = mock.Mock()
+        local.is_file.return_value = True
+        local.read_bytes.side_effect = [verified, b'changed after verification']
+        with mock.patch.object(snapshot, 'load_manifest', return_value={'files': [entry]}), \
+                mock.patch.object(snapshot, 'capture', return_value='fixture'), \
+                mock.patch.object(snapshot, 'local_path', return_value=local), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(snapshot.restore(remote, mock.Mock(), True), 0)
+        local.read_bytes.assert_called_once_with()
+        remote.write.assert_called_once_with(path, verified)
+        self.assertEqual(state[path], verified)
 
 
 class DeviceCleanupTest(unittest.TestCase):

@@ -193,23 +193,35 @@ def sidecar_issues(device, manifest, scope, *, pending_writes=True):
 
 
 def verify_local(record, manifest):
+    problems, _ = inspect_local(record, manifest)
+    return problems
+
+
+def inspect_local(record, manifest, retain=()):
+    """Verify local copies and retain the exact bytes that will be written by restore."""
     problems = []
+    prepared = {}
     for entry in manifest['files']:
         if not entry['present']:
             continue
-        path = local_path(record, entry['path'])
+        relative = entry['path']
+        path = local_path(record, relative)
         if not path.is_file():
-            problems.append(f'{entry["path"]}: missing from the snapshot copy')
-        elif digest(path.read_bytes()) != entry['sha256']:
-            problems.append(f'{entry["path"]}: snapshot copy does not match its manifest')
-    return problems
+            problems.append(f'{relative}: missing from the snapshot copy')
+            continue
+        data = path.read_bytes()
+        if digest(data) != entry['sha256']:
+            problems.append(f'{relative}: snapshot copy does not match its manifest')
+        elif relative in retain:
+            prepared[relative] = data
+    return problems, prepared
 
 
 def restore(device, record, apply, only=()):
     manifest = load_manifest(record)
     entries = select(manifest['files'], only)
     wanted = {entry['path'] for entry in entries}
-    problems = verify_local(record, manifest)
+    problems, prepared = inspect_local(record, manifest, wanted if apply else ())
     if problems:
         for line in problems:
             print(f'{line}', file=sys.stderr)
@@ -239,7 +251,7 @@ def restore(device, record, apply, only=()):
             continue
         rel = entry['path']
         path = f'{DATA_DIR}/{rel}'
-        data = local_path(record, rel).read_bytes()
+        data = prepared[rel]
         info = device.info(path)
         if info is not None and digest(device.read(path)) == entry['sha256']:
             if stable(info) != stable(entry):

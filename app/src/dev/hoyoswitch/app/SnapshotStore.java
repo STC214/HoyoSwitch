@@ -327,13 +327,12 @@ final class SnapshotStore {
         entry.size = bytes.length;
         entry.sha256 = sha256(bytes);
         Entry metadata = stat(snapshot.game.path(relative));
-        if (metadata != null) {
-            entry.uid = metadata.uid;
-            entry.gid = metadata.gid;
-            entry.mode = metadata.mode;
-            entry.context = metadata.context;
-            entry.mtime = metadata.mtime;
-        }
+        requireRestoreMetadata(metadata, relative);
+        entry.uid = metadata.uid;
+        entry.gid = metadata.gid;
+        entry.mode = metadata.mode;
+        entry.context = metadata.context;
+        entry.mtime = metadata.mtime;
         File local = storedFile(snapshot, relative);
         File parent = local.getParentFile();
         if (parent != null && !parent.mkdirs() && !parent.isDirectory()) {
@@ -401,12 +400,10 @@ final class SnapshotStore {
         int cursor = 0;
         for (String relative : relatives) {
             String marker = "\n--HSN1DB--" + relative + "\n";
-            int start = data.indexOf(marker, cursor);
-            if (start < 0) {
-                out.put(relative, null);
-                continue;
+            if (!data.startsWith(marker, cursor)) {
+                throw new IOException("数据库分帧缺少预期条目: " + relative);
             }
-            int pos = start + marker.length();
+            int pos = cursor + marker.length();
             if (pos >= data.length()) {
                 throw new IOException("数据库分帧截断: " + relative);
             }
@@ -414,6 +411,9 @@ final class SnapshotStore {
                 out.put(relative, null);
                 cursor = pos + 1;
                 continue;
+            }
+            if (data.charAt(pos) != 'P') {
+                throw new IOException("数据库分帧状态无效: " + relative);
             }
             // 'P' then decimal size then newline, then exactly that many bytes.
             pos++;
@@ -428,13 +428,16 @@ final class SnapshotStore {
                 throw new IOException("数据库分帧长度无效: " + relative, error);
             }
             int contentStart = newline + 1;
-            int contentEnd = contentStart + (int) size;
-            if (contentEnd > data.length()) {
-                throw new IOException("数据库分帧内容被截断: " + relative);
+            if (size < 0 || size > data.length() - contentStart) {
+                throw new IOException("数据库分帧长度越界: " + relative);
             }
+            int contentEnd = contentStart + (int) size;
             out.put(relative, data.substring(contentStart, contentEnd)
                     .getBytes(StandardCharsets.ISO_8859_1));
             cursor = contentEnd;
+        }
+        if (cursor != data.length()) {
+            throw new IOException("数据库分帧包含多余数据");
         }
         return out;
     }
@@ -1519,11 +1522,33 @@ final class SnapshotStore {
     }
 
     private byte[] readVerifiedSwitchPayload(Snapshot target, Entry entry) throws IOException {
+        requireRestoreMetadata(entry, entry.path);
         byte[] data = readSnapshot(target, entry.path);
         if (!sha256(data).equals(entry.sha256)) {
             throw new IOException("快照文件已损坏: " + entry.path);
         }
         return data;
+    }
+
+    private static void requireRestoreMetadata(Entry metadata, String relative) throws IOException {
+        if (metadata == null || !metadata.uid.matches("[0-9]+") || !metadata.gid.matches("[0-9]+")
+                || !metadata.mode.matches("[0-7]{1,4}")) {
+            throw new IOException("文件属主或权限缺失、无效: " + relative);
+        }
+    }
+
+    /** Validate the entire rollback set before starting a device write. */
+    private void verifyRestoreSnapshot(Snapshot snapshot) throws IOException {
+        for (String relative : snapshot.game.files) {
+            if (snapshot.entry(relative) == null) {
+                throw new IOException("安全快照缺少条目: " + relative);
+            }
+        }
+        for (Entry entry : snapshot.entries.values()) {
+            if (entry.present) {
+                readVerifiedSwitchPayload(snapshot, entry);
+            }
+        }
     }
 
     private void switchToLocked(Snapshot target, boolean launchAfterwards, Progress progress)
@@ -1540,6 +1565,8 @@ final class SnapshotStore {
             }
             return;
         }
+        Snapshot safety = load(game, safetyId);
+        verifyRestoreSnapshot(safety);
         try {
             for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
@@ -1552,7 +1579,6 @@ final class SnapshotStore {
                 } else {
                     writeDevice(path, data);
                     verifyWritten(path, entry);
-                    ensureMetadata(path, entry);
                     progress.report("已写入并校验: " + relative);
                 }
                 if (relative.endsWith(".db")) {
@@ -1576,21 +1602,25 @@ final class SnapshotStore {
             } catch (IOException ignored) {
                 // The switch already succeeded; a stale timestamp is cosmetic.
             }
-            pruneNamed(game, "切换前自动备份", 3);
-            if (launchAfterwards) {
-                game.launch();
-                progress.report("已请求启动游戏");
-            }
         } catch (IOException failure) {
-            Snapshot safety = load(game, safetyId);
             String suffix;
             try {
-                restoreAll(safety, progress);
+                restoreAllLocked(safety, progress);
                 suffix = "；已回滚到切换前状态";
             } catch (IOException rollbackFailure) {
                 suffix = "；回滚失败: " + rollbackFailure.getMessage();
             }
             throw new IOException(failure.getMessage() + suffix, failure);
+        }
+        pruneNamed(game, "切换前自动备份", 3);
+        if (launchAfterwards) {
+            try {
+                game.launch();
+                progress.report("游戏启动成功");
+            } catch (IOException launchFailure) {
+                throw new IOException("账号切换已完成，但游戏启动失败；请手动重试: "
+                        + launchFailure.getMessage(), launchFailure);
+            }
         }
     }
 
@@ -1622,7 +1652,11 @@ final class SnapshotStore {
     }
 
     private boolean exists(String path) throws IOException {
-        return RootShell.run("test -e " + quote(path)).code == 0;
+        RootShell.Result result = RootShell.run("test -e " + quote(path));
+        if (result.code != 0 && result.code != 1) {
+            throw new IOException("检查文件是否存在失败: " + path + " (" + result.code + ")");
+        }
+        return result.code == 0;
     }
 
     /** Restores owner, mode and SELinux context when the bytes already match. */
@@ -1662,6 +1696,7 @@ final class SnapshotStore {
     /** Restores every present file of {@code snapshot}; used by rollback. */
     void restoreAll(Snapshot snapshot, Progress progress) throws IOException {
         synchronized (LOCK) {
+            verifyRestoreSnapshot(snapshot);
             restoreAllLocked(snapshot, progress);
         }
     }
@@ -1696,7 +1731,6 @@ final class SnapshotStore {
             }
             writeDevice(path, data);
             verifyWritten(path, entry);
-            ensureMetadata(path, entry);
             progress.report("已恢复: " + entry.path);
         }
     }
@@ -1714,33 +1748,12 @@ final class SnapshotStore {
         if (actual == null || !sha256(actual).equals(entry.sha256)) {
             throw new IOException("读回内容与快照不一致: " + entry.path);
         }
-        Entry info = stat(path);
-        if (info == null) {
-            throw new IOException("无法读取文件属性: " + entry.path);
-        }
-        boolean sameOwner = info.uid.equals(entry.uid) && info.gid.equals(entry.gid)
-                && info.mode.equals(entry.mode);
-        if (!sameOwner) {
-            RootShell.checked("chown " + entry.uid + ":" + entry.gid + " " + quote(path)
-                    + "; chmod " + entry.mode + " " + quote(path));
-        }
-        if (!entry.context.isEmpty() && !info.context.equals(entry.context)) {
-            RootShell.run("chcon " + quote(entry.context) + " " + quote(path));
-        }
-        Entry after = stat(path);
-        if (after == null || !after.uid.equals(entry.uid) || !after.gid.equals(entry.gid)
-                || !after.mode.equals(entry.mode)) {
-            throw new IOException("属主或权限无法恢复: " + entry.path);
-        }
-        if (!entry.context.isEmpty() && !after.context.isEmpty()
-                && !after.context.equals(entry.context)) {
-            throw new IOException("SELinux 上下文无法恢复: " + entry.path);
-        }
+        ensureMetadata(path, entry);
     }
 
     private Entry stat(String path) throws IOException {
         RootShell.Result result = RootShell.run(
-                "stat -c '%u %g %a %s %Y' " + quote(path) + "; ls -Z " + quote(path));
+                "stat -c '%u %g %a %s %Y' " + quote(path) + " && ls -Z " + quote(path));
         if (result.code != 0) {
             return null;
         }
@@ -1756,8 +1769,12 @@ final class SnapshotStore {
         entry.uid = fields[0];
         entry.gid = fields[1];
         entry.mode = fields[2];
-        entry.size = Long.parseLong(fields[3]);
-        entry.mtime = Long.parseLong(fields[4]);
+        try {
+            entry.size = Long.parseLong(fields[3]);
+            entry.mtime = Long.parseLong(fields[4]);
+        } catch (NumberFormatException error) {
+            throw new IOException("文件属性格式无效: " + path, error);
+        }
         for (int index = 1; index < lines.length; index++) {
             for (String token : lines[index].trim().split("\\s+")) {
                 if (token.startsWith("u:") && token.chars().filter(ch -> ch == ':').count() >= 2) {

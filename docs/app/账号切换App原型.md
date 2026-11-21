@@ -1,6 +1,6 @@
 # 账号切换 App
 
-文档同步：2026-11-20。应用名「米游账号切换」，包名 `dev.hoyoswitch.app`，当前版本 **1.6.0**（versionCode 53），支持星穹铁道 4.7.0、原神 7.2.0、绝区零 3.3.0。三款游戏均完成真机双向切换验证；正式签名包已通过 GitHub Release 发布。
+文档同步：2026-11-20。应用名「米游账号切换」，包名 `dev.hoyoswitch.app`，当前版本 **1.6.1**（versionCode 54），支持星穹铁道 4.7.0、原神 7.2.0、绝区零 3.3.0。三款游戏均完成真机双向切换验证；正式签名包已通过 GitHub Release 发布。
 
 > 当前说明以 1.4.6 为准；历史实测与发布记录保留当时的版本、时间和验证边界。本次文档同步不新增真机测试。
 
@@ -147,6 +147,15 @@ app/
 其他可选方向：多设备／多系统兼容性验证、签名迁移工具，以及按需清理历史中的旧账号标识；不表示这些功能已经实现。
 
 ## 8. 发布记录
+
+### 1.6.1（2026-11-21）
+
+- `versionCode 54`，加固（用户修复）：
+  - `GameProfile.launch()` 校验 `am start -W` 的「Status: ok」，启动失败抛出错误
+  - `SnapshotStore` 回滚前整组校验（`verifyRestoreSnapshot`）、属主/权限元数据校验（`requireRestoreMetadata`）、DB 分帧解析更严格（越界/多余数据/状态位校验）
+  - PC 工具 `snapshot.py` 的 `inspect_local` 保留恢复所需字节并校验本地副本
+- 单测 34 个通过
+- 标签：`v1.6.1`；Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.1>
 
 ### 1.6.0（2026-11-21）
 

@@ -175,8 +175,17 @@ final class GameProfile {
     }
 
     void launch() throws IOException {
-        if (!activity.isEmpty()) {
-            RootShell.run("am start -W -n " + activity);
+        if (activity.isEmpty()) {
+            throw new IOException("未配置" + label + "的启动入口");
+        }
+        RootShell.Result result = RootShell.run("am start -W -n " + activity);
+        String output = result.text();
+        boolean started = Arrays.stream(output.split("\\r?\\n"))
+                .anyMatch(line -> "Status: ok".equals(line.trim()));
+        if (result.code != 0 || !started) {
+            String detail = result.err.isEmpty() ? output : result.err;
+            throw new IOException(label + "启动失败（退出码 " + result.code + "）"
+                    + (detail.isEmpty() ? "" : ": " + detail));
         }
     }
 
