@@ -25,6 +25,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.Layout;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
@@ -77,6 +78,7 @@ public final class MainActivity extends Activity {
     private static final String PREF_GAME = "game";
     private static final String PREF_SORT = "sort_mode";
     private static final String PREF_ORDER = "fixed_order_";
+    private static final String SWITCH_ACCOUNT_LABEL = "切换到此账号";
     private static final int SORT_LAST_USED = 0;
     private static final int SORT_FIXED = 1;
     private int sortMode = SORT_LAST_USED;
@@ -1190,6 +1192,95 @@ public final class MainActivity extends Activity {
                 : "已登录，但不在任何快照中";
     }
 
+    private static final class CardActions extends ViewGroup {
+        private final Button primary;
+        private final Button credentials;
+        private final Button more;
+        private final int gap;
+        private final int moreMinWidth;
+        private int rows;
+
+        CardActions(Context context, Button primary, Button credentials, Button more,
+                    int gap, int moreMinWidth) {
+            super(context);
+            this.primary = primary;
+            this.credentials = credentials;
+            this.more = more;
+            this.gap = gap;
+            this.moreMinWidth = moreMinWidth;
+            primary.setSingleLine(false);
+            credentials.setSingleLine(false);
+            addView(primary, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+            addView(credentials, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+            addView(more, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            // Reserve room for the longer primary label on every card so equally wide
+            // cards use the same layout even if only one is the current account.
+            int primaryMin = Math.max(labelWidth(primary, primary.getText()),
+                    labelWidth(primary, SWITCH_ACCOUNT_LABEL));
+            int credentialsMin = Math.max(moreMinWidth, labelWidth(credentials, credentials.getText()));
+            int moreMin = Math.max(moreMinWidth, labelWidth(more, more.getText()));
+            int inlineMin = primaryMin + credentialsMin + moreMin + 2 * gap;
+            int width = resolveSize(inlineMin, widthSpec);
+            CardActionWidths widths = CardActionWidths.fit(width, primaryMin, credentialsMin, moreMin, gap);
+            rows = widths.rows;
+            measureButton(primary, widths.primary);
+            measureButton(credentials, widths.credentials);
+            measureButton(more, widths.more);
+            int height = primary.getMeasuredHeight();
+            int secondaryHeight = Math.max(credentials.getMeasuredHeight(), more.getMeasuredHeight());
+            if (rows == 1) {
+                height = Math.max(height, secondaryHeight);
+                equalizeHeight(primary, height);
+                equalizeHeight(credentials, height);
+                equalizeHeight(more, height);
+            } else if (rows == 2) {
+                height += gap + secondaryHeight;
+                equalizeHeight(credentials, secondaryHeight);
+                equalizeHeight(more, secondaryHeight);
+            } else {
+                height += 2 * gap + credentials.getMeasuredHeight() + more.getMeasuredHeight();
+            }
+            setMeasuredDimension(width, resolveSize(height, heightSpec));
+        }
+
+        private static int labelWidth(Button button, CharSequence label) {
+            return (int) Math.ceil(Layout.getDesiredWidth(label, button.getPaint()))
+                    + button.getCompoundPaddingLeft() + button.getCompoundPaddingRight();
+        }
+
+        private static void measureButton(Button button, int width) {
+            button.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+        }
+
+        private static void equalizeHeight(Button button, int height) {
+            if (button.getMeasuredHeight() != height) {
+                button.measure(MeasureSpec.makeMeasureSpec(button.getMeasuredWidth(), MeasureSpec.EXACTLY),
+                        MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+            }
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            layoutFromStart(primary, 0, 0);
+            int start = rows == 1 ? primary.getMeasuredWidth() + gap : 0;
+            int y = rows == 1 ? 0 : primary.getMeasuredHeight() + gap;
+            layoutFromStart(credentials, start, y);
+            int moreY = rows == 3 ? y + credentials.getMeasuredHeight() + gap : y;
+            layoutFromStart(more, getWidth() - more.getMeasuredWidth(), moreY);
+        }
+
+        private void layoutFromStart(View child, int start, int top) {
+            int width = child.getMeasuredWidth();
+            int left = getLayoutDirection() == LAYOUT_DIRECTION_RTL ? getWidth() - start - width : start;
+            child.layout(left, top, left + width, top + child.getMeasuredHeight());
+        }
+    }
+
     private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
                              GameProfile selected, Map<String, Boolean> readableById) {
         ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
@@ -1280,24 +1371,9 @@ public final class MainActivity extends Activity {
                     + (switchable || isCurrent ? "" : " · 切换待验证"));
             meta.setTextSize(12);
             meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
-            LinearLayout info = new LinearLayout(this);
-            info.setOrientation(LinearLayout.HORIZONTAL);
-            info.setGravity(Gravity.CENTER_VERTICAL);
-            info.addView(meta, weightWrap());
-            Button credentials = pill("账号与密码", false);
-            credentials.setTextSize(12);
-            credentials.setPadding(dp(8), 0, dp(8), 0);
-            credentials.setOnClickListener(view -> showAccountCredentials(snapshot));
-            LinearLayout.LayoutParams credentialsParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            credentialsParams.leftMargin = dp(6);
-            info.addView(credentials, credentialsParams);
-            card.addView(info, withBottomMargin(matchWrap(), dp(4)));
+            card.addView(meta, withTopMargin(withBottomMargin(matchWrap(), dp(10)), dp(4)));
 
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            Button primary = pill(isCurrent ? "更新快照" : "切换到此账号", true);
+            Button primary = pill(isCurrent ? "更新快照" : SWITCH_ACCOUNT_LABEL, true);
             if (isCurrent) {
                 primary.setOnClickListener(view -> runOp("更新快照 " + snapshot.name, snapshot, () -> {
                     AccountUpdater.updateTarget(store, snapshot, this::appendLog);
@@ -1309,15 +1385,13 @@ public final class MainActivity extends Activity {
             boolean enabled = cardActionsAvailable && readable && (isCurrent || switchable);
             primary.setEnabled(enabled);
             primary.setAlpha(enabled ? 1f : 0.45f);
-            row.addView(primary, weightWrap());
+            Button credentials = pill("账号与密码", false);
+            credentials.setOnClickListener(view -> showAccountCredentials(snapshot));
             Button moreButton = pill("⋯", false);
             moreButton.setContentDescription("更多操作：" + snapshot.name);
             moreButton.setOnClickListener(view -> showCardMenu(snapshot, readable));
-            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(52),
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            moreParams.leftMargin = dp(8);
-            row.addView(moreButton, moreParams);
-            card.addView(row, matchWrap());
+            card.addView(new CardActions(this, primary, credentials, moreButton, dp(8), dp(52)),
+                    matchWrap());
 
             cardList.addView(card, withBottomMargin(matchWrap(), dp(10)));
         }

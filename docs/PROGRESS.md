@@ -6,6 +6,7 @@
 
 ## 发布与待发布状态
 
+- **v1.7.2：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.2)（versionCode 62）。账号卡片分开显示状态与操作，底部保留「账号与密码」直达入口；窄屏或大字体时按钮按可用宽度换行。包含 v1.7.1 的免费和免责声明文案更新。
 - **v1.7.1：** 源码版本（versionCode 61）。README 与 App 捐赠页明确工具免费、捐赠自愿且不影响功能；关于页同步更新知识产权声明，两处均加粗重点文案。
 - **v1.7.0：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.0)（versionCode 60）。更多工具增加捐赠和关于页；README 置顶两张捐赠二维码，紧接与 App 一致的知识产权声明。
 - **v1.7.0 验证边界：** 51 项 Python 测试、3 项 Java 回归及 Android 资源链接通过；确认二维码与原文件字节一致。真机验证两页和横屏滚动，未扫码、付款或切换游戏账号。
