@@ -11,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -29,11 +30,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -101,6 +105,11 @@ public final class MainActivity extends Activity {
     private volatile boolean busy;
 
     @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(AppAppearance.wrap(base));
+    }
+
+    @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         // Start on the tab the app was closed on; self tests then run against that game.
@@ -113,6 +122,7 @@ public final class MainActivity extends Activity {
         loadFixedOrder();
         store = new SnapshotStore(this);
         setContentView(buildLayout());
+        updateSystemBarAppearance();
         if (state != null) {
             saveGame();
             String log = state.getString("ui.log", "");
@@ -124,12 +134,26 @@ public final class MainActivity extends Activity {
         renderTabs();
         showLoading();
         // Destructive self tests are only honoured by debug builds; a release APK ignores them.
-        boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        boolean debuggable = state == null
+                && (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         String selftest = debuggable ? getIntent().getStringExtra("selftest") : null;
         if ("cardops".equals(selftest)) {
             main.postDelayed(this::runCardOpsTest, 1200);
         } else if (debuggable && getIntent().getBooleanExtra("selftest", false)) {
             main.postDelayed(this::runSelfTest, 1500);
+        }
+    }
+
+    private void updateSystemBarAppearance() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                        == Configuration.UI_MODE_NIGHT_YES;
+                controller.setSystemBarsAppearance(dark ? 0 : lightBars, lightBars);
+            }
         }
     }
 
@@ -564,6 +588,8 @@ public final class MainActivity extends Activity {
                 displayedTechnicalStatus == null ? "尚未读取状态，请刷新。" : displayedTechnicalStatus)));
         actions.add(new Action(android.R.drawable.ic_popup_sync, "刷新", "重新读取账号和游戏状态",
                 false, this::refresh));
+        actions.add(new Action(android.R.drawable.ic_menu_preferences, "主题",
+                "当前选择：" + AppAppearance.mode(this).title, false, this::showAppearanceChoices));
         actions.add(new Action(android.R.drawable.ic_menu_preferences,
                 isFloatingRunning() ? "关闭悬浮按钮" : "开启悬浮按钮", "在游戏内更新当前快照",
                 false, this::toggleFloating));
@@ -574,6 +600,49 @@ public final class MainActivity extends Activity {
                 sortMode == SORT_LAST_USED ? "当前按操作时间排序" : "当前使用固定顺序",
                 false, this::toggleSort));
         showActionSheet("更多工具", actions);
+    }
+
+    private void showAppearanceChoices() {
+        if (busy) {
+            toast("请等当前操作结束后再切换主题");
+            return;
+        }
+        AppAppearance.Mode selected = AppAppearance.mode(this);
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("主题"), withBottomMargin(matchWrap(), dp(8)));
+        RadioGroup group = new RadioGroup(this);
+        group.setOrientation(RadioGroup.VERTICAL);
+        for (AppAppearance.Mode mode : AppAppearance.Mode.values()) {
+            RadioButton option = new RadioButton(this);
+            option.setId(View.generateViewId());
+            option.setText(mode.title);
+            option.setTextColor(getColor(R.color.text_primary));
+            option.setMinHeight(dp(48));
+            option.setPadding(dp(4), 0, 0, 0);
+            option.setButtonTintList(new ColorStateList(new int[][]{
+                    {android.R.attr.state_checked}, new int[0]},
+                    new int[]{getColor(R.color.accent), getColor(R.color.text_muted)}));
+            group.addView(option, new RadioGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            if (mode == selected) {
+                group.check(option.getId());
+            }
+            option.setOnClickListener(view -> {
+                dialog.dismiss();
+                if (busy) {
+                    toast("请等当前操作结束后再切换主题");
+                } else if (mode != selected) {
+                    AppAppearance.select(this, mode);
+                    recreate();
+                }
+            });
+        }
+        card.addView(group, withBottomMargin(matchWrap(), dp(8)));
+        Button close = pill("关闭", false);
+        close.setOnClickListener(view -> dialog.dismiss());
+        card.addView(close, matchWrap());
+        showDialog(dialog, card);
     }
 
     private void showInfo(String title, String message) {

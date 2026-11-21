@@ -4,7 +4,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.IBinder;
@@ -51,7 +54,12 @@ public final class FloatingService extends Service {
     private volatile boolean updating;
 
     private WindowManager windowManager;
-    private View button;
+    private TextView button;
+    private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener = (prefs, key) -> {
+        if ((key == null || AppAppearance.MODE_KEY.equals(key)) && button != null) {
+            applyButtonTheme(button);
+        }
+    };
     private WindowManager.LayoutParams params;
     private boolean moving;
     private int downX;
@@ -66,6 +74,7 @@ public final class FloatingService extends Service {
         game = resolveGame(null);
         startAsForeground();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        AppAppearance.preferences(this).registerOnSharedPreferenceChangeListener(appearanceListener);
         try {
             addButton();
         } catch (RuntimeException error) {
@@ -116,6 +125,7 @@ public final class FloatingService extends Service {
 
     @Override
     public void onDestroy() {
+        AppAppearance.preferences(this).unregisterOnSharedPreferenceChangeListener(appearanceListener);
         running = false;
         if (button != null && windowManager != null) {
             try {
@@ -126,6 +136,14 @@ public final class FloatingService extends Service {
             button = null;
         }
         super.onDestroy();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (button != null) {
+            applyButtonTheme(button);
+        }
     }
 
     private void startAsForeground() {
@@ -150,18 +168,13 @@ public final class FloatingService extends Service {
     private void addButton() {
         TextView view = new TextView(this);
         view.setText("更新快照");
-        view.setTextColor(0xFFFFFFFF);
         view.setTextSize(14);
         view.setTypeface(null, android.graphics.Typeface.BOLD);
         view.setContentDescription("更新当前账号快照");
         int padH = dp(14);
         int padV = dp(9);
         view.setPadding(padH, padV, padH, padV);
-        android.graphics.drawable.GradientDrawable shape =
-                new android.graphics.drawable.GradientDrawable();
-        shape.setCornerRadius(dp(24));
-        shape.setColor(0xF22F6BFF);
-        view.setBackground(shape);
+        applyButtonTheme(view);
         view.setElevation(dp(6));
 
         params = new WindowManager.LayoutParams(
@@ -214,6 +227,15 @@ public final class FloatingService extends Service {
             Log.i("hoyoswitch", "floating button at " + location[0] + "," + location[1]
                     + " size " + view.getWidth() + "x" + view.getHeight());
         });
+    }
+
+    private void applyButtonTheme(TextView view) {
+        Context palette = AppAppearance.wrap(getApplicationContext());
+        view.setTextColor(palette.getColor(R.color.on_accent));
+        android.graphics.drawable.GradientDrawable shape = new android.graphics.drawable.GradientDrawable();
+        shape.setCornerRadius(dp(24));
+        shape.setColor(palette.getColor(R.color.accent));
+        view.setBackground(shape);
     }
 
     /** Keeps the button fully on screen while dragging. */
