@@ -674,6 +674,25 @@ public final class MainActivity extends Activity {
         game = profile;
         saveGame();
         loadFixedOrder();
+        // Reflect the switch immediately and disable game actions until the new game's data
+        // arrives, so a tap on capture/launch (or a stale card) cannot act on the new game while
+        // the old game's UI is still on screen.
+        renderTabs();
+        if (statusView != null) {
+            statusView.setText("正在加载" + profile.label + "…");
+        }
+        if (captureButton != null) {
+            captureButton.setEnabled(false);
+            captureButton.setAlpha(0.45f);
+        }
+        if (launchButton != null) {
+            launchButton.setEnabled(false);
+            launchButton.setAlpha(0.45f);
+        }
+        if (cardList != null) {
+            cardList.removeAllViews();
+        }
+        currentCardView = null;
         appendLog("切换到分栏：" + profile.label);
         refresh();
     }
