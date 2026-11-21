@@ -41,6 +41,7 @@ import android.widget.Toast;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -64,8 +65,22 @@ public final class MainActivity extends Activity {
     private Button captureButton;
     private Button launchButton;
     private TextView logToggle;
+    private TextView headlineView;
+    private TextView sublineView;
+    private Button sortToggle;
     private static final String PREFS_NAME = "ui";
     private static final String PREF_GAME = "game";
+    private static final String PREF_SORT = "sort_mode";
+    private static final String PREF_ORDER = "fixed_order_";
+    private static final int SORT_LAST_USED = 0;
+    private static final int SORT_FIXED = 1;
+    private int sortMode = SORT_LAST_USED;
+    private final List<String> fixedOrder = new ArrayList<>();
+    private boolean cardOpActive;
+    private int focusedCardIndex = -1;
+    private LinearLayout content;
+    private View currentCardView;
+    private boolean followCurrentCard;
 
     private int refreshGeneration;
     private ScrollView pageScroll;
@@ -79,6 +94,8 @@ public final class MainActivity extends Activity {
         // Start on the tab the app was closed on; self tests then run against that game.
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         game = GameProfile.byPackage(prefs.getString(PREF_GAME, GameProfile.STARRAIL.pkg));
+        sortMode = prefs.getInt(PREF_SORT, SORT_LAST_USED);
+        loadFixedOrder();
         store = new SnapshotStore(this);
         setContentView(buildLayout());
         if (state != null) {
@@ -277,33 +294,32 @@ public final class MainActivity extends Activity {
      * orientations share one construction path.
      */
     private LinearLayout buildTwoColumns(LinearLayout root) {
-        // Portrait order: header, headline, subline, status pill, scrolling content.
+        // Portrait root order: header, status pill, scrolling content (hero copy is inside it).
         View header = root.getChildAt(0);
-        View headline = root.getChildAt(1);
-        View subline = root.getChildAt(2);
-        View status = root.getChildAt(3);
-        ScrollView scroll = (ScrollView) root.getChildAt(4);
+        View status = root.getChildAt(1);
+        ScrollView scroll = (ScrollView) root.getChildAt(2);
         LinearLayout content = (LinearLayout) scroll.getChildAt(0);
 
-        // Content order: section 01, tabs, section 02, controls, section 03, cards, section 04, log.
-        View section01 = content.getChildAt(0);
-        View tabs = content.getChildAt(1);
-        View section02 = content.getChildAt(2);
-        View controls = content.getChildAt(3);
-        View section03 = content.getChildAt(4);
-        View cards = content.getChildAt(5);
-        View section04 = content.getChildAt(6);
-        View log = content.getChildAt(7);
+        // Content order: headline, subline, section 01, tabs, section 02, controls,
+        // section 03, cards, section 04, log.
+        View section01 = content.getChildAt(2);
+        View tabs = content.getChildAt(3);
+        View section02 = content.getChildAt(4);
+        View controls = content.getChildAt(5);
+        View section03 = content.getChildAt(6);
+        View cards = content.getChildAt(7);
+        View section04 = content.getChildAt(8);
+        View log = content.getChildAt(9);
 
         root.removeAllViews();
         content.removeAllViews();
 
-        if (headline != null) {
+        if (headlineView != null) {
             // Landscape trades the marketing headline for functional space.
-            headline.setVisibility(View.GONE);
+            headlineView.setVisibility(View.GONE);
         }
-        if (subline != null) {
-            subline.setVisibility(View.GONE);
+        if (sublineView != null) {
+            sublineView.setVisibility(View.GONE);
         }
         if (status instanceof LinearLayout) {
             status.setPadding(dp(14), dp(10), dp(14), dp(10));
@@ -320,8 +336,6 @@ public final class MainActivity extends Activity {
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         left.addView(header, matchWrap());
-        left.addView(headline, matchWrap());
-        left.addView(subline, matchWrap());
         left.addView(status, matchWrap());
         left.addView(section01, matchWrap());
         left.addView(tabs, matchWrap());
@@ -422,14 +436,14 @@ public final class MainActivity extends Activity {
         headline.setTextSize(28);
         headline.setTypeface(null, Typeface.BOLD);
         headline.setTextColor(getColor(R.color.text_primary));
-        root.addView(headline, matchWrap());
+        headlineView = headline;
 
         TextView subline = new TextView(this);
         subline.setText("拍摄当前账号，切换时只写必要文件。");
         subline.setTextSize(13);
         subline.setTextColor(getColor(R.color.text_muted));
         subline.setPadding(0, dp(6), 0, dp(16));
-        root.addView(subline, matchWrap());
+        sublineView = subline;
 
         LinearLayout statusPill = new LinearLayout(this);
         statusPill.setOrientation(LinearLayout.HORIZONTAL);
@@ -456,6 +470,11 @@ public final class MainActivity extends Activity {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, 0, 0, dp(8));
+        this.content = content;
+
+        // The hero copy scrolls with the list instead of staying pinned above the ScrollView.
+        content.addView(headlineView, matchWrap());
+        content.addView(sublineView, matchWrap());
 
         content.addView(section("01 / 游戏分栏"), matchWrap());
         LinearLayout tabs = new LinearLayout(this);
@@ -514,8 +533,11 @@ public final class MainActivity extends Activity {
         floatingButton.setOnClickListener(view -> toggleFloating());
         logToggle = pill("隐藏日志", false);
         logToggle.setOnClickListener(view -> toggleLog());
+        sortToggle = pill("排序：按操作时间", false);
+        sortToggle.setOnClickListener(view -> toggleSort());
         utilityRow.addView(floatingButton, weightWrap(1f, dp(4)));
         utilityRow.addView(logToggle, weightWrap(1f, dp(4)));
+        utilityRow.addView(sortToggle, weightWrap(1f, dp(4)));
         controlCard.addView(utilityRow, matchWrap());
 
         TextView hint = new TextView(this);
@@ -546,6 +568,8 @@ public final class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
 
         scroll.addView(content);
+        // Lock scrolling while a card operation is focused; released immediately after.
+        scroll.setOnTouchListener((view, event) -> cardOpActive);
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
@@ -647,6 +671,203 @@ public final class MainActivity extends Activity {
                 .putString(PREF_GAME, game.pkg).apply();
     }
 
+    private void loadFixedOrder() {
+        fixedOrder.clear();
+        String raw = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_ORDER + game.pkg, "");
+        if (raw != null && !raw.isEmpty()) {
+            for (String id : raw.split(",")) {
+                if (!id.isEmpty()) {
+                    fixedOrder.add(id);
+                }
+            }
+        }
+    }
+
+    private void saveFixedOrder() {
+        StringBuilder builder = new StringBuilder();
+        for (String id : fixedOrder) {
+            if (builder.length() > 0) {
+                builder.append(',');
+            }
+            builder.append(id);
+        }
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putString(PREF_ORDER + game.pkg, builder.toString()).apply();
+    }
+
+    private void toggleSort() {
+        sortMode = sortMode == SORT_LAST_USED ? SORT_FIXED : SORT_LAST_USED;
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                .putInt(PREF_SORT, sortMode).apply();
+        if (sortToggle != null) {
+            sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
+        }
+        if (sortMode == SORT_FIXED && fixedOrder.isEmpty()) {
+            // Seed the fixed order from the current last-used order so toggling is not jarring.
+            seedFixedOrder();
+        }
+        refresh();
+    }
+
+    private void seedFixedOrder() {
+        List<SnapshotStore.Snapshot> snapshots = store.list(game);
+        fixedOrder.clear();
+        sortSnapshots(snapshots);
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            fixedOrder.add(snapshot.id);
+        }
+        saveFixedOrder();
+    }
+
+    private void sortSnapshots(List<SnapshotStore.Snapshot> snapshots) {
+        if (sortMode == SORT_LAST_USED) {
+            snapshots.sort((left, right) -> Long.compare(activityTime(right), activityTime(left)));
+            return;
+        }
+        snapshots.sort((left, right) -> {
+            int il = fixedOrder.indexOf(left.id);
+            int ir = fixedOrder.indexOf(right.id);
+            if (il >= 0 && ir >= 0) {
+                return Integer.compare(il, ir);
+            }
+            if (il >= 0) {
+                return -1;
+            }
+            if (ir >= 0) {
+                return 1;
+            }
+            return left.id.compareTo(right.id);
+        });
+    }
+
+    private static long activityTime(SnapshotStore.Snapshot snapshot) {
+        return snapshot.lastUsedAt > 0 ? snapshot.lastUsedAt : snapshot.createdAt;
+    }
+
+    private ScrollView activeScroll() {
+        return columnScroll != null ? columnScroll : pageScroll;
+    }
+
+    /** Smooth-scrolls so the currently logged-in card sits at the top of the viewport. */
+    private void scrollToCard() {
+        ScrollView scroll = activeScroll();
+        if (scroll == null || currentCardView == null) {
+            return;
+        }
+        View target = currentCardView;
+        scroll.post(() -> {
+            View child = scroll.getChildAt(0);
+            if (child == null) {
+                return;
+            }
+            int top = target.getTop();
+            View parent = (View) target.getParent();
+            while (parent != null && parent != child) {
+                top += parent.getTop();
+                parent = (View) parent.getParent();
+            }
+            scroll.smoothScrollTo(0, Math.max(0, top));
+        });
+    }
+
+    /**
+     * Locks the viewport on a card being operated on and moves the log right below it, so one
+     * screen shows the card on top and the log underneath. Released as soon as the operation ends.
+     */
+    private void focusCard(SnapshotStore.Snapshot snapshot) {
+        if (cardOpActive) {
+            return;
+        }
+        cardOpActive = true;
+        moveLogBelowCard(snapshot.id);
+        scrollToCard();
+    }
+
+    private void unfocusCard() {
+        if (!cardOpActive) {
+            return;
+        }
+        restoreLogToBottom();
+        cardOpActive = false;
+    }
+
+    private void moveLogBelowCard(String snapshotId) {
+        int cardIndex = cardIndexFor(snapshotId);
+        if (cardIndex < 0) {
+            return;
+        }
+        focusedCardIndex = cardIndex;
+        if (logSection != null && logSection.getParent() == content) {
+            content.removeView(logSection);
+        }
+        if (logScroll != null && logScroll.getParent() == content) {
+            content.removeView(logScroll);
+        }
+        int insertAt = cardIndex + 1;
+        if (logSection != null && logSection.getParent() == null) {
+            cardList.addView(logSection, insertAt);
+        }
+        if (logScroll != null && logScroll.getParent() == null) {
+            cardList.addView(logScroll, insertAt + 1,
+                    new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
+        }
+    }
+
+    private void restoreLogToBottom() {
+        if (logSection != null && logSection.getParent() != content) {
+            ((ViewGroup) logSection.getParent()).removeView(logSection);
+            content.addView(logSection, matchWrap());
+        }
+        if (logScroll != null && logScroll.getParent() != content) {
+            ((ViewGroup) logScroll.getParent()).removeView(logScroll);
+            content.addView(logScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
+        }
+        focusedCardIndex = -1;
+    }
+
+    private int cardIndexFor(String snapshotId) {
+        for (int index = 0; index < cardList.getChildCount(); index++) {
+            View child = cardList.getChildAt(index);
+            if (snapshotId.equals(child.getTag())) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private void moveCard(SnapshotStore.Snapshot snapshot, int delta) {
+        if (sortMode != SORT_FIXED) {
+            return;
+        }
+        int index = fixedOrder.indexOf(snapshot.id);
+        if (index < 0) {
+            fixedOrder.add(snapshot.id);
+            index = fixedOrder.size() - 1;
+        }
+        int target = index + delta;
+        if (target < 0 || target >= fixedOrder.size()) {
+            return;
+        }
+        Collections.swap(fixedOrder, index, target);
+        saveFixedOrder();
+        refresh();
+    }
+
+    private void ensureFixedOrder(List<SnapshotStore.Snapshot> snapshots) {
+        boolean changed = false;
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            if (!fixedOrder.contains(snapshot.id)) {
+                fixedOrder.add(snapshot.id);
+                changed = true;
+            }
+        }
+        if (changed) {
+            saveFixedOrder();
+        }
+    }
+
     private void refresh() {
         final GameProfile selected = game;
         final int generation = ++refreshGeneration;
@@ -668,6 +889,10 @@ public final class MainActivity extends Activity {
                 store.cleanup(selected);
             }
             snapshots = store.list(selected);
+            if (sortMode == SORT_FIXED) {
+                ensureFixedOrder(snapshots);
+            }
+            sortSnapshots(snapshots);
             try {
                 current = store.detectCurrent(selected);
             } catch (IOException error) {
@@ -699,6 +924,10 @@ public final class MainActivity extends Activity {
                 launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
                 renderTabs();
                 renderCards(listed, matched == null ? null : matched.id, selected);
+                if (followCurrentCard) {
+                    followCurrentCard = false;
+                    scrollToCard();
+                }
             });
         }).start();
     }
@@ -752,6 +981,7 @@ public final class MainActivity extends Activity {
                              GameProfile selected) {
         ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
         int savedScrollY = scroll == null ? 0 : scroll.getScrollY();
+        currentCardView = null;
         cardList.removeAllViews();
         if (!selected.supported) {
             TextView unsupported = new TextView(this);
@@ -787,6 +1017,10 @@ public final class MainActivity extends Activity {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             boolean isCurrent = snapshot.id.equals(currentId);
+            card.setTag(snapshot.id);
+            if (isCurrent) {
+                currentCardView = card;
+            }
             boolean readable = store.decryptable(snapshot);
             boolean switchable = snapshot.game.switchVerified;
             GradientDrawable cardFill = isCurrent
@@ -838,9 +1072,26 @@ public final class MainActivity extends Activity {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
+            if (sortMode == SORT_FIXED) {
+                Button up = pill("↑", false);
+                up.setContentDescription("上移：" + snapshot.name);
+                up.setOnClickListener(view -> moveCard(snapshot, -1));
+                row.addView(up, new LinearLayout.LayoutParams(dp(56),
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                Button down = pill("↓", false);
+                down.setContentDescription("下移：" + snapshot.name);
+                down.setOnClickListener(view -> moveCard(snapshot, 1));
+                LinearLayout.LayoutParams downParams = new LinearLayout.LayoutParams(dp(56),
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                downParams.leftMargin = dp(4);
+                row.addView(down, downParams);
+            }
             Button updateButton = pill("更新此快照", false);
-            updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name,
-                    () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
+            updateButton.setOnClickListener(view -> {
+                focusCard(snapshot);
+                runOp("更新快照 " + snapshot.name,
+                        () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog));
+            });
             updateButton.setEnabled(readable);
             updateButton.setAlpha(readable ? 1f : 0.45f);
             Button moreButton = pill("⋯", false);
@@ -1264,6 +1515,7 @@ public final class MainActivity extends Activity {
         Button save = pill("保存", true);
         save.setOnClickListener(view -> {
             dialog.dismiss();
+            focusCard(snapshot);
             runOp("重命名", () -> store.rename(snapshot, input.getText().toString()));
         });
         row.addView(cancel, weightWrap(1f, dp(4)));
@@ -1276,7 +1528,10 @@ public final class MainActivity extends Activity {
         showConfirm("删除快照",
                 "将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。",
                 "删除", true,
-                () -> runOp("删除快照", () -> store.delete(snapshot)),
+                () -> {
+                    focusCard(snapshot);
+                    runOp("删除快照", () -> store.delete(snapshot));
+                },
                 null);
     }
 
@@ -1298,7 +1553,10 @@ public final class MainActivity extends Activity {
         showConfirm("回滚到 " + entry.label,
                 "快照内容会替换为该历史版本，当前版本先归档保留。继续？",
                 "回滚",
-                () -> runOp("回滚历史版本", () -> store.restoreHistory(snapshot, entry)));
+                () -> {
+                    focusCard(snapshot);
+                    runOp("回滚历史版本", () -> store.restoreHistory(snapshot, entry));
+                });
     }
 
     private void confirmSwitch(SnapshotStore.Snapshot target) {
@@ -1359,6 +1617,7 @@ public final class MainActivity extends Activity {
                         + target.game.switchFiles.size() + " 个账号文件，并自动保存切换前状态。继续？",
                 "切换",
                 () -> new Thread(() -> {
+                    main.post(() -> focusCard(target));
                     try {
                         if (target.game.isRunning()) {
                             target.game.forceStop();
@@ -1369,6 +1628,8 @@ public final class MainActivity extends Activity {
                         appendLog("失败：" + error.getMessage());
                     } finally {
                         busy = false;
+                        followCurrentCard = true;
+                        main.post(this::unfocusCard);
                         refresh();
                     }
                 }).start(),
@@ -1457,6 +1718,7 @@ public final class MainActivity extends Activity {
                 appendLog("失败：" + message);
             } finally {
                 busy = false;
+                main.post(this::unfocusCard);
                 refresh();
             }
         }).start();
