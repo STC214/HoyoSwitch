@@ -946,7 +946,10 @@ public final class MainActivity extends Activity {
             final List<SnapshotStore.Snapshot> listed = snapshots;
             final SnapshotStore.Current currentNow = current;
             main.post(() -> {
-                if (generation != refreshGeneration) {
+                // A stale result must be dropped both when its generation is superseded and when
+                // the tab changed since it started (game is switched synchronously on the main
+                // thread, before the generation bump is queued).
+                if (generation != refreshGeneration || selected != game) {
                     return;
                 }
                 // Sort and fixed-order maintenance run here, on the main thread, so a stale
