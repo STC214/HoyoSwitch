@@ -2,10 +2,37 @@
 
 import os
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import build
+
+
+class ApkOutputTest(unittest.TestCase):
+    def test_only_verified_package_replaces_existing_distribution(self):
+        signer = ('apksigner-fixture',)
+        for release in (True, False):
+            with self.subTest(release=release), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                candidate = root / 'candidate'
+                destination = root / 'dist' / 'current'
+                destination.parent.mkdir()
+                candidate.write_bytes(b'new-fixture')
+                destination.write_bytes(b'old-fixture')
+                with patch.object(build, 'run', side_effect=subprocess.CalledProcessError(1, signer)):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        build.publish_apk(signer, candidate, destination, release=release)
+                self.assertEqual(destination.read_bytes(), b'old-fixture')
+                self.assertTrue(candidate.is_file())
+
+                with patch.object(build, 'run') as verify:
+                    build.publish_apk(signer, candidate, destination, release=release)
+                flags = ('--print-certs',) if release else ()
+                verify.assert_called_once_with(*signer, 'verify', '--verbose', *flags, candidate)
+                self.assertEqual(destination.read_bytes(), b'new-fixture')
+                self.assertFalse(candidate.exists())
 
 
 class SigningPasswordTest(unittest.TestCase):

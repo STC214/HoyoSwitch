@@ -2,13 +2,13 @@
 
 在 **已取得 Root 权限的安卓手机** 上运行的米哈游账号切换 App：为同一款游戏保存多个账号状态，需要时一键切换并重新登录。
 
-当前版本 **1.6.4**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
+当前版本 **1.6.5**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
 
 - 崩坏：星穹铁道 4.7.0
 - 原神 7.2.0
 - 绝区零 3.3.0
 
-> 三款游戏此前已完成真机双向切换验证（以游戏内 UID 对比确认），不是对 1.6.4 的重新真机验收。结论仅适用于已测设备与游戏版本；本版改动及验证边界见[项目进度](docs/PROGRESS.md#发布与待发布状态)。
+> 三款游戏此前已完成真机双向切换验证（以游戏内 UID 对比确认）。1.6.5 进行了横竖屏界面验收，未重新验证游戏账号切换；本版改动及验证边界见[项目进度](docs/PROGRESS.md#发布与待发布状态)。
 
 ## 功能
 
@@ -22,13 +22,13 @@
 
 ## 发布与安装
 
-GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.4>
+GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.5>
 
 本地构建（需要 Python、JDK、ADB、Android SDK 36 / Build Tools 36.0.0）：
 
 ```powershell
-python .\app\build.py             # 调试签名 -> app\build\account-switch.apk
-python .\app\build.py --release   # 正式签名 -> app\build\account-switch-release.apk
+python .\app\build.py             # 调试签名 -> dist\account-switch.apk
+python .\app\build.py --release   # 正式签名 -> dist\account-switch-release.apk
 ```
 
 - 正式密钥：`app/keystore/hoyoswitch-release.p12` 与 `keystore.txt`（已被 Git 忽略，需随项目保存）
@@ -41,7 +41,7 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 - [x] 原神：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 绝区零：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 账号卡、账号密码、加密存储、历史回滚、悬浮按钮、分栏记忆
-- [x] 正式签名、GitHub Release（1.0.0 → 1.6.4）
+- [x] 正式签名、GitHub Release（1.0.0 → 1.6.5）
 - ○ 最近删除回收站
 - ○ 游戏大版本更新后的兼容性复核
 
@@ -60,6 +60,7 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 ## 目录约定
 
 - `app/`：安卓 App 源码与构建脚本；`app/keystore/` 放正式密钥（Git 忽略）
+- `dist/`：已验证的正式和调试 APK；构建中间文件仍在 `app/build/`（均由 Git 忽略）
 - `tools/`：PC 端验证脚本，不属于交付 App
 - `prototype/`：早期流程原型（已被正式 App 取代，仅留记录）
 - `docs/`：需求、进度、调研、工具文档

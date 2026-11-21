@@ -61,17 +61,13 @@ public final class MainActivity extends Activity {
     private SnapshotStore store;
     private GameProfile game = GameProfile.STARRAIL;
     private TextView statusView;
+    private Button recoveryRetry;
     private TextView logSection;
-    private EditText nameInput;
     private LinearLayout cardList;
     private TextView logView;
     private ScrollView logScroll;
     private Button captureButton;
     private Button launchButton;
-    private TextView logToggle;
-    private TextView headlineView;
-    private TextView sublineView;
-    private Button sortToggle;
     private static final String PREFS_NAME = "ui";
     private static final String PREF_GAME = "game";
     private static final String PREF_SORT = "sort_mode";
@@ -83,7 +79,6 @@ public final class MainActivity extends Activity {
     private boolean cardOpActive;
     private int focusedCardIndex = -1;
     private String focusedCardId;
-    private LinearLayout content;
     private ViewGroup logHome;
     private View currentCardView;
     private boolean followCurrentCard;
@@ -93,6 +88,8 @@ public final class MainActivity extends Activity {
     private boolean pageResumed;
     private SnapshotStore.RefreshData displayedData;
     private String displayedStatusPrefix;
+    private String displayedTechnicalStatus;
+    private boolean cardActionsAvailable;
     private final Consumer<GameProfile> snapshotObserver = selected -> {
         if (selected == game) {
             refresh();
@@ -116,24 +113,13 @@ public final class MainActivity extends Activity {
         loadFixedOrder();
         store = new SnapshotStore(this);
         setContentView(buildLayout());
-        if (sortToggle != null) {
-            sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
-        }
         if (state != null) {
             saveGame();
             String log = state.getString("ui.log", "");
             if (logView != null && !log.isEmpty()) {
                 logView.setText(log);
             }
-            if (logScroll != null && !state.getBoolean("ui.logVisible", true)) {
-                logScroll.setVisibility(View.GONE);
-                if (logSection != null) {
-                    logSection.setVisibility(View.GONE);
-                }
-                if (logToggle != null) {
-                    logToggle.setText("显示日志");
-                }
-            }
+            setLogVisible(state.getBoolean("ui.logVisible", false));
         }
         renderTabs();
         showLoading();
@@ -307,66 +293,13 @@ public final class MainActivity extends Activity {
         refresh();
     }
 
-    private LinearLayout buildLayout() {
-        LinearLayout portrait = buildSingleColumn();
-        boolean wide = getResources().getConfiguration().orientation
-                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
-        return wide ? buildTwoColumns(portrait) : portrait;
-    }
-
-    /**
-     * Landscape gets two independently scrolling columns: controls on the left, account cards and
-     * the log on the right. The single-column tree is built first and then re-parented, so both
-     * orientations share one construction path.
-     */
-    private LinearLayout buildTwoColumns(LinearLayout root) {
-        // Portrait root order: header, status pill, scrolling content (hero copy is inside it).
-        View header = root.getChildAt(0);
-        View status = root.getChildAt(1);
-        ScrollView scroll = (ScrollView) root.getChildAt(2);
-        LinearLayout content = (LinearLayout) scroll.getChildAt(0);
-
-        // Content order: headline, subline, section 01, tabs, section 02, controls,
-        // section 03, cards, section 04, log.
-        View section01 = content.getChildAt(2);
-        View tabs = content.getChildAt(3);
-        View section02 = content.getChildAt(4);
-        View controls = content.getChildAt(5);
-        View section03 = content.getChildAt(6);
-        View cards = content.getChildAt(7);
-        View section04 = content.getChildAt(8);
-        View log = content.getChildAt(9);
-
-        root.removeAllViews();
-        content.removeAllViews();
-
-        if (headlineView != null) {
-            // Landscape trades the marketing headline for functional space.
-            headlineView.setVisibility(View.GONE);
-        }
-        if (sublineView != null) {
-            sublineView.setVisibility(View.GONE);
-        }
-        if (status instanceof LinearLayout) {
-            status.setPadding(dp(14), dp(10), dp(14), dp(10));
-        }
-        if (statusView != null) {
-            statusView.setTextSize(12);
-        }
-        for (View block : new View[] {section01, section02, section03, section04}) {
-            if (block instanceof TextView) {
-                block.setPadding(0, dp(12), 0, dp(6));
-            }
-        }
-
+    /** Landscape keeps the controls and account cards in independently scrolling columns. */
+    private LinearLayout buildTwoColumns(LinearLayout root, View header, View tabs,
+                                         View status, View actions, View accountsHeading) {
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
-        left.addView(header, matchWrap());
-        left.addView(status, matchWrap());
-        left.addView(section01, matchWrap());
-        left.addView(tabs, matchWrap());
-        left.addView(section02, matchWrap());
-        left.addView(controls, matchWrap());
+        left.addView(header, withBottomMargin(matchWrap(), dp(12)));
+        addQuickControls(left, tabs, status, actions);
 
         ScrollView leftScroll = new ScrollView(this);
         leftScroll.addView(left);
@@ -377,11 +310,7 @@ public final class MainActivity extends Activity {
 
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
-        right.addView(section03, matchWrap());
-        right.addView(cards, matchWrap());
-        right.addView(section04, matchWrap());
-        right.addView(log, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+        addAccounts(right, accountsHeading, 180);
         logHome = right;
 
         ScrollView rightScroll = new ScrollView(this);
@@ -399,15 +328,15 @@ public final class MainActivity extends Activity {
         return root;
     }
 
-    private LinearLayout buildSingleColumn() {
+    private LinearLayout buildLayout() {
         int pad = dp(24);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, dp(14), pad, dp(14));
         // targetSdk 36 draws edge to edge; add the system bar insets on top of our own padding.
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(pad, dp(14) + insets.getSystemWindowInsetTop(),
-                    pad, dp(14) + insets.getSystemWindowInsetBottom());
+            view.setPadding(pad + insets.getSystemWindowInsetLeft(), dp(14) + insets.getSystemWindowInsetTop(),
+                    pad + insets.getSystemWindowInsetRight(), dp(14) + insets.getSystemWindowInsetBottom());
             return insets;
         });
 
@@ -429,14 +358,14 @@ public final class MainActivity extends Activity {
         avatarBg.setCornerRadius(dp(18));
         avatar.setBackground(avatarBg);
         avatar.setClipToOutline(true);
-        headerRow.addView(avatar, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        headerRow.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
 
         LinearLayout headerText = new LinearLayout(this);
         headerText.setOrientation(LinearLayout.VERTICAL);
         headerText.setPadding(dp(14), 0, 0, 0);
         TextView appName = new TextView(this);
         appName.setText("米游账号切换");
-        appName.setTextSize(22);
+        appName.setTextSize(20);
         appName.setTypeface(null, Typeface.BOLD);
         appName.setTextColor(getColor(R.color.text_primary));
         if (Build.VERSION.SDK_INT >= 28) {
@@ -444,35 +373,20 @@ public final class MainActivity extends Activity {
         }
         headerText.addView(appName, matchWrap());
         TextView appSubtitle = new TextView(this);
-        appSubtitle.setText("米哈游账号快照 · 一键切换");
+        appSubtitle.setText("切号，轻一点。");
         appSubtitle.setTextSize(12);
         appSubtitle.setTextColor(getColor(R.color.text_muted));
         headerText.addView(appSubtitle, matchWrap());
         headerRow.addView(headerText, weightWrap());
 
         TextView versionChip = new TextView(this);
-        versionChip.setText(currentVersion());
+        versionChip.setText("App " + currentVersion());
         versionChip.setTextSize(12);
         versionChip.setTextColor(getColor(R.color.accent));
         versionChip.setPadding(dp(12), dp(6), dp(12), dp(6));
         versionChip.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 20));
         headerRow.addView(versionChip, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(headerRow, withBottomMargin(matchWrap(), dp(22)));
-
-        TextView headline = new TextView(this);
-        headline.setText("切号，轻一点。");
-        headline.setTextSize(28);
-        headline.setTypeface(null, Typeface.BOLD);
-        headline.setTextColor(getColor(R.color.text_primary));
-        headlineView = headline;
-
-        TextView subline = new TextView(this);
-        subline.setText("拍摄当前账号，切换时只写必要文件。");
-        subline.setTextSize(13);
-        subline.setTextColor(getColor(R.color.text_muted));
-        subline.setPadding(0, dp(6), 0, dp(16));
-        sublineView = subline;
 
         LinearLayout statusPill = new LinearLayout(this);
         statusPill.setOrientation(LinearLayout.HORIZONTAL);
@@ -492,21 +406,13 @@ public final class MainActivity extends Activity {
         statusView.setPadding(dp(10), 0, 0, 0);
         statusView.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         statusPill.addView(statusView, weightWrap());
-        root.addView(statusPill, withBottomMargin(matchWrap(), dp(6)));
-
-        ScrollView scroll = new ScrollView(this);
-        pageScroll = scroll;
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(0, 0, 0, dp(8));
-        this.content = content;
-        this.logHome = content;
-
-        // The hero copy scrolls with the list instead of staying pinned above the ScrollView.
-        content.addView(headlineView, matchWrap());
-        content.addView(sublineView, matchWrap());
-
-        content.addView(section("01 / 游戏分栏"), matchWrap());
+        LinearLayout statusPanel = new LinearLayout(this);
+        statusPanel.setOrientation(LinearLayout.VERTICAL);
+        statusPanel.addView(statusPill, matchWrap());
+        recoveryRetry = pill("已停止游戏，重试恢复", false);
+        recoveryRetry.setVisibility(View.GONE);
+        recoveryRetry.setOnClickListener(view -> refresh());
+        statusPanel.addView(recoveryRetry, withTopMargin(matchWrap(), dp(4)));
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setBackground(surface(R.color.card_bg, R.color.card_bg, 26));
@@ -526,23 +432,7 @@ public final class MainActivity extends Activity {
             tabs.addView(tab, tabParams);
             gameButtons.add(tab);
         }
-        content.addView(tabs, withBottomMargin(matchWrap(), dp(4)));
         renderTabs();
-
-        content.addView(section("02 / 拍摄与切换"), matchWrap());
-        LinearLayout controlCard = new LinearLayout(this);
-        controlCard.setOrientation(LinearLayout.VERTICAL);
-        controlCard.setBackground(surface(R.color.card_bg, R.color.card_bg, 26));
-        controlCard.setPadding(dp(20), dp(18), dp(20), dp(18));
-
-        nameInput = new EditText(this);
-        nameInput.setHint("账号名称（可选）");
-        nameInput.setTextSize(14);
-        nameInput.setTextColor(getColor(R.color.text_primary));
-        nameInput.setHintTextColor(getColor(R.color.text_muted));
-        nameInput.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
-        nameInput.setPadding(dp(14), dp(10), dp(14), dp(10));
-        controlCard.addView(nameInput, withBottomMargin(matchWrap(), dp(10)));
 
         LinearLayout primaryRow = new LinearLayout(this);
         primaryRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -553,42 +443,19 @@ public final class MainActivity extends Activity {
             GameProfile selected = game;
             runOp("启动 " + selected.label, () -> store.launchGame(selected));
         });
-        Button refreshButton = pill("刷新", false);
-        refreshButton.setOnClickListener(view -> refresh());
+        Button toolsButton = pill("⋯", false);
+        toolsButton.setContentDescription("更多工具");
+        toolsButton.setOnClickListener(view -> showTools());
         primaryRow.addView(captureButton, weightWrap(1.4f, dp(4)));
         primaryRow.addView(launchButton, weightWrap(1f, dp(4)));
-        primaryRow.addView(refreshButton, weightWrap(1f, dp(4)));
-        controlCard.addView(primaryRow, withBottomMargin(matchWrap(), dp(8)));
+        primaryRow.addView(toolsButton, new LinearLayout.LayoutParams(dp(52),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout utilityRow = new LinearLayout(this);
-        utilityRow.setOrientation(LinearLayout.HORIZONTAL);
-        Button floatingButton = pill("悬浮按钮", false);
-        floatingButton.setOnClickListener(view -> toggleFloating());
-        logToggle = pill("隐藏日志", false);
-        logToggle.setOnClickListener(view -> toggleLog());
-        sortToggle = pill("排序：按操作时间", false);
-        sortToggle.setOnClickListener(view -> toggleSort());
-        utilityRow.addView(floatingButton, weightWrap(1f, dp(4)));
-        utilityRow.addView(logToggle, weightWrap(1f, dp(4)));
-        utilityRow.addView(sortToggle, weightWrap(1f, dp(4)));
-        controlCard.addView(utilityRow, matchWrap());
-
-        TextView hint = new TextView(this);
-        hint.setText("拍摄快照可直接进行，不需要停止游戏；切换账号时会先停止游戏，只写该游戏的账号文件并自动备份。"
-                + "切换后等游戏加载完成，再在该账号卡片上点「更新此快照」。");
-        hint.setTextSize(12);
-        hint.setTextColor(getColor(R.color.text_muted));
-        hint.setPadding(0, dp(12), 0, 0);
-        controlCard.addView(hint, matchWrap());
-        content.addView(controlCard, withBottomMargin(matchWrap(), dp(4)));
-
-        content.addView(section("03 / 账号快照"), matchWrap());
+        TextView accountsHeading = section("账号快照");
         cardList = new LinearLayout(this);
         cardList.setOrientation(LinearLayout.VERTICAL);
-        content.addView(cardList, matchWrap());
 
-        logSection = section("04 / 操作日志");
-        content.addView(logSection, matchWrap());
+        logSection = section("操作日志");
         logView = new TextView(this);
         logView.setTextSize(11);
         logView.setTextColor(getColor(R.color.text_muted));
@@ -597,8 +464,22 @@ public final class MainActivity extends Activity {
         logScroll.addView(logView);
         logScroll.setBackground(surface(R.color.log_bg, R.color.log_bg, 22));
         logScroll.setPadding(dp(16), dp(14), dp(16), dp(14));
-        content.addView(logScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
+        setLogVisible(false);
+
+        boolean wide = getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        if (wide) {
+            return buildTwoColumns(root, headerRow, tabs, statusPanel, primaryRow, accountsHeading);
+        }
+        root.addView(headerRow, withBottomMargin(matchWrap(), dp(12)));
+        ScrollView scroll = new ScrollView(this);
+        pageScroll = scroll;
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, 0, 0, dp(8));
+        logHome = content;
+        addQuickControls(content, tabs, statusPanel, primaryRow);
+        addAccounts(content, accountsHeading, 120);
 
         scroll.addView(content);
         // Lock scrolling while a card operation is focused; released immediately after.
@@ -606,6 +487,20 @@ public final class MainActivity extends Activity {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
+    }
+
+    private void addQuickControls(LinearLayout parent, View tabs, View status, View actions) {
+        parent.addView(tabs, withBottomMargin(matchWrap(), dp(8)));
+        parent.addView(status, withBottomMargin(matchWrap(), dp(8)));
+        parent.addView(actions, matchWrap());
+    }
+
+    private void addAccounts(LinearLayout parent, View heading, int logHeight) {
+        parent.addView(heading, matchWrap());
+        parent.addView(cardList, matchWrap());
+        parent.addView(logSection, matchWrap());
+        parent.addView(logScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(logHeight)));
     }
 
     private TextView section(String text) {
@@ -649,15 +544,47 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleLog() {
-        if (logScroll == null) {
-            return;
+        boolean show = logScroll.getVisibility() != View.VISIBLE;
+        setLogVisible(show);
+        if (show) {
+            scrollToView(logSection);
         }
-        boolean visible = logScroll.getVisibility() == View.VISIBLE;
-        logScroll.setVisibility(visible ? View.GONE : View.VISIBLE);
-        if (logSection != null) {
-            logSection.setVisibility(visible ? View.GONE : View.VISIBLE);
-        }
-        logToggle.setText(visible ? "显示日志" : "隐藏日志");
+    }
+
+    private void setLogVisible(boolean visible) {
+        int visibility = visible ? View.VISIBLE : View.GONE;
+        logScroll.setVisibility(visibility);
+        logSection.setVisibility(visibility);
+    }
+
+    private void showTools() {
+        List<Action> actions = new ArrayList<>();
+        actions.add(new Action(android.R.drawable.ic_menu_info_details, "运行详情",
+                "查看 Root、游戏版本和进程状态", false, () -> showInfo("运行详情",
+                displayedTechnicalStatus == null ? "尚未读取状态，请刷新。" : displayedTechnicalStatus)));
+        actions.add(new Action(android.R.drawable.ic_popup_sync, "刷新", "重新读取账号和游戏状态",
+                false, this::refresh));
+        actions.add(new Action(android.R.drawable.ic_menu_preferences,
+                isFloatingRunning() ? "关闭悬浮按钮" : "开启悬浮按钮", "在游戏内更新当前快照",
+                false, this::toggleFloating));
+        actions.add(new Action(R.drawable.ic_history,
+                logScroll.getVisibility() == View.VISIBLE ? "隐藏操作日志" : "查看操作日志",
+                "查看最近的操作和错误信息", false, this::toggleLog));
+        actions.add(new Action(android.R.drawable.ic_menu_sort_by_size, "切换排序方式",
+                sortMode == SORT_LAST_USED ? "当前按操作时间排序" : "当前使用固定顺序",
+                false, this::toggleSort));
+        showActionSheet("更多工具", actions);
+    }
+
+    private void showInfo(String title, String message) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle(title), withBottomMargin(matchWrap(), dp(10)));
+        card.addView(dialogMessage(message), withBottomMargin(matchWrap(), dp(14)));
+        Button done = pill("关闭", false);
+        done.setOnClickListener(view -> dialog.dismiss());
+        card.addView(done, matchWrap());
+        showDialog(dialog, card);
     }
 
     private GradientDrawable surface(int fill, int stroke, int radius) {
@@ -706,7 +633,11 @@ public final class MainActivity extends Activity {
 
     private void showLoading() {
         displayedStatusPrefix = null;
+        displayedTechnicalStatus = null;
+        cardActionsAvailable = false;
+        recoveryRetry.setVisibility(View.GONE);
         if (statusView != null) {
+            statusView.setTextColor(getColor(R.color.accent));
             statusView.setText("正在加载" + game.label + "…");
         }
         if (captureButton != null) {
@@ -757,9 +688,6 @@ public final class MainActivity extends Activity {
         sortMode = sortMode == SORT_LAST_USED ? SORT_FIXED : SORT_LAST_USED;
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putInt(PREF_SORT, sortMode).apply();
-        if (sortToggle != null) {
-            sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
-        }
         renderDisplayedCards(game);
     }
 
@@ -1011,22 +939,36 @@ public final class MainActivity extends Activity {
         }
         if (data == null) {
             displayedStatusPrefix = null;
+            displayedTechnicalStatus = null;
+            cardActionsAvailable = false;
+            recoveryRetry.setVisibility(View.GONE);
+            statusView.setTextColor(getColor(R.color.danger));
             statusView.setText("刷新失败，请重试");
+            captureButton.setEnabled(false);
+            captureButton.setAlpha(0.45f);
+            launchButton.setEnabled(false);
+            launchButton.setAlpha(0.45f);
+            renderDisplayedCards(selected);
             return;
         }
         displayedData = data;
         String rootText = rooted ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
         String gameText = version.isEmpty() ? "未检测到" + selected.label
                 : selected.label + " " + version;
-        displayedStatusPrefix = rootText + " · " + gameText + " · "
-                + (running == null ? "进程状态未知" : (running ? "游戏运行中" : "游戏已停止"));
-        if (!data.recoveryError.isEmpty()) {
-            displayedStatusPrefix += " · " + data.recoveryError;
+        String processText = running == null ? "进程状态未知" : (running ? "游戏运行中" : "游戏已停止");
+        displayedTechnicalStatus = rootText + "\n" + gameText + "\n" + processText;
+        boolean recoveryPending = !data.recoveryError.isEmpty();
+        cardActionsAvailable = rooted && running != null && !recoveryPending;
+        if (recoveryPending) {
+            displayedTechnicalStatus += "\n" + data.recoveryError;
         }
+        displayedStatusPrefix = rooted ? processText : "未取得 Root · " + processText;
+        recoveryRetry.setVisibility(recoveryPending ? View.VISIBLE : View.GONE);
+        statusView.setTextColor(getColor(recoveryPending || !rooted ? R.color.danger : R.color.accent));
         renderDisplayedCards(selected);
-        captureButton.setEnabled(rooted && !busy && data.recoveryError.isEmpty());
+        captureButton.setEnabled(selected.supported && cardActionsAvailable);
         captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
-        launchButton.setEnabled(!selected.activity.isEmpty() && !busy && data.recoveryError.isEmpty());
+        launchButton.setEnabled(!selected.activity.isEmpty() && cardActionsAvailable);
         launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
         if (followCurrentCard) {
             followCurrentCard = false;
@@ -1049,9 +991,13 @@ public final class MainActivity extends Activity {
         sortSnapshots(listed);
         SnapshotStore.Snapshot matched = match(displayedData.current, listed, displayedData.midById);
         if (displayedStatusPrefix != null) {
-            String accountText = selected.supported
-                    ? " · 当前账号：" + describe(displayedData.current, matched) : " · 尚未适配";
-            statusView.setText(displayedStatusPrefix + accountText);
+            if (!displayedData.recoveryError.isEmpty()) {
+                statusView.setText("上次切换尚未恢复。请停止游戏后重试。\n失败原因可在「运行详情」查看。");
+            } else {
+                String accountText = selected.supported
+                        ? "当前账号：" + describe(displayedData.current, matched) : "尚未适配";
+                statusView.setText(accountText + " · " + displayedStatusPrefix);
+            }
         }
         renderCards(listed, matched == null ? null : matched.id, selected, displayedData.readableById);
     }
@@ -1134,7 +1080,7 @@ public final class MainActivity extends Activity {
         }
         if (snapshots.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("这个分栏还没有快照。登录 " + selected.label + " 后停止游戏，点「拍摄快照」。");
+            empty.setText("这个分栏还没有快照。登录 " + selected.label + " 后点「拍摄快照」，无需停止游戏。");
             empty.setTextSize(13);
             empty.setTextColor(getColor(R.color.text_muted));
             empty.setPadding(0, dp(20), 0, 0);
@@ -1168,81 +1114,84 @@ public final class MainActivity extends Activity {
                     : surface(R.color.card_bg, R.color.card_bg, 26);
             card.setBackground(ripple(cardFill));
             card.setClickable(true);
-            card.setOnClickListener(view -> showCardMenu(snapshot));
-            int cardPad = dp(20);
-            card.setPadding(cardPad, dp(18), cardPad, dp(18));
+            card.setOnClickListener(view -> showCardMenu(snapshot, readable));
+            int cardPad = dp(14);
+            card.setPadding(cardPad, dp(12), cardPad, dp(12));
 
+            LinearLayout heading = new LinearLayout(this);
+            heading.setOrientation(LinearLayout.HORIZONTAL);
+            heading.setGravity(Gravity.CENTER_VERTICAL);
             TextView label = new TextView(this);
             label.setTypeface(null, Typeface.BOLD);
-            label.setText(isCurrent ? snapshot.name + "　（当前登录）" : snapshot.name);
-            label.setTextSize(18);
+            label.setText(snapshot.name);
+            label.setTextSize(16);
             label.setTextColor(getColor(R.color.text_primary));
             label.setMaxLines(2);
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             if (Build.VERSION.SDK_INT >= 28) {
                 label.setAccessibilityHeading(true);
             }
-            card.addView(label, matchWrap());
+            heading.addView(label, weightWrap());
+            if (isCurrent) {
+                TextView currentBadge = new TextView(this);
+                currentBadge.setText("当前登录");
+                currentBadge.setTextSize(11);
+                currentBadge.setTextColor(getColor(R.color.accent));
+                currentBadge.setPadding(dp(8), dp(4), dp(8), dp(4));
+                currentBadge.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 16));
+                LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                badgeParams.leftMargin = dp(8);
+                heading.addView(currentBadge, badgeParams);
+            }
+            card.addView(heading, matchWrap());
 
             TextView meta = new TextView(this);
-            int present = 0;
-            for (SnapshotStore.Entry entry : snapshot.entries.values()) {
-                if (entry.present) {
-                    present++;
-                }
-            }
-            meta.setText(format.format(new Date(snapshot.createdAt)) + " · "
-                    + present + "/" + snapshot.entries.size() + " 个状态文件存在"
-                    + (snapshot.lastUsedAt > 0 ? " · 上次使用 "
-                    + format.format(new Date(snapshot.lastUsedAt)) : "")
-                    + (readable ? "" : " · 无法解密（密钥已失效）")
-                    + (switchable ? "" : " · 切换待验证（当前只能拍摄）"));
+            meta.setText("更新于 " + format.format(new Date(snapshot.createdAt))
+                    + (readable ? "" : " · 快照无法读取")
+                    + (switchable || isCurrent ? "" : " · 切换待验证"));
             meta.setTextSize(12);
             meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
-            meta.setPadding(0, dp(4), 0, dp(14));
-            card.addView(meta, matchWrap());
-            card.addView(credentialsBlock(snapshot), withBottomMargin(matchWrap(), dp(12)));
-
-            Button switchButton = pill("切换到此账号", true);
-            switchButton.setOnClickListener(view -> confirmSwitch(snapshot));
-            switchButton.setEnabled(readable && switchable);
-            switchButton.setAlpha(readable && switchable ? 1f : 0.45f);
-            card.addView(switchButton, withBottomMargin(matchWrap(), dp(8)));
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.HORIZONTAL);
+            info.setGravity(Gravity.CENTER_VERTICAL);
+            info.addView(meta, weightWrap());
+            Button credentials = pill("账号与密码", false);
+            credentials.setTextSize(12);
+            credentials.setPadding(dp(8), 0, dp(8), 0);
+            credentials.setOnClickListener(view -> showAccountCredentials(snapshot));
+            LinearLayout.LayoutParams credentialsParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            credentialsParams.leftMargin = dp(6);
+            info.addView(credentials, credentialsParams);
+            card.addView(info, withBottomMargin(matchWrap(), dp(4)));
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            if (sortMode == SORT_FIXED) {
-                Button up = pill("↑", false);
-                up.setContentDescription("上移：" + snapshot.name);
-                up.setOnClickListener(view -> moveCard(snapshot, -1));
-                row.addView(up, new LinearLayout.LayoutParams(dp(56),
-                        ViewGroup.LayoutParams.WRAP_CONTENT));
-                Button down = pill("↓", false);
-                down.setContentDescription("下移：" + snapshot.name);
-                down.setOnClickListener(view -> moveCard(snapshot, 1));
-                LinearLayout.LayoutParams downParams = new LinearLayout.LayoutParams(dp(56),
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                downParams.leftMargin = dp(4);
-                row.addView(down, downParams);
+            Button primary = pill(isCurrent ? "更新快照" : "切换到此账号", true);
+            if (isCurrent) {
+                primary.setOnClickListener(view -> runOp("更新快照 " + snapshot.name, snapshot, () -> {
+                    AccountUpdater.updateTarget(store, snapshot, this::appendLog);
+                    toast("已更新快照");
+                }));
+            } else {
+                primary.setOnClickListener(view -> confirmSwitch(snapshot));
             }
-            Button updateButton = pill("更新此快照", false);
-            updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name, snapshot,
-                    () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
-            updateButton.setEnabled(readable);
-            updateButton.setAlpha(readable ? 1f : 0.45f);
+            boolean enabled = cardActionsAvailable && readable && (isCurrent || switchable);
+            primary.setEnabled(enabled);
+            primary.setAlpha(enabled ? 1f : 0.45f);
+            row.addView(primary, weightWrap());
             Button moreButton = pill("⋯", false);
             moreButton.setContentDescription("更多操作：" + snapshot.name);
-            moreButton.setOnClickListener(view -> showCardMenu(snapshot));
-            row.addView(updateButton, weightWrap(1f, dp(4)));
-            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(56),
+            moreButton.setOnClickListener(view -> showCardMenu(snapshot, readable));
+            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(52),
                     ViewGroup.LayoutParams.WRAP_CONTENT);
-            moreParams.leftMargin = dp(4);
-            moreParams.rightMargin = dp(4);
+            moreParams.leftMargin = dp(8);
             row.addView(moreButton, moreParams);
             card.addView(row, matchWrap());
 
-            cardList.addView(card, withBottomMargin(matchWrap(), dp(14)));
+            cardList.addView(card, withBottomMargin(matchWrap(), dp(10)));
         }
         // A refresh that lands while an operation is focused must keep the log pinned under the
         // target card (removeAllViews above would otherwise detach it).
@@ -1323,12 +1272,17 @@ public final class MainActivity extends Activity {
                 visibleDialog = null;
             }
         });
-        dialog.setContentView(card);
+        ScrollView viewport = new ScrollView(this);
+        viewport.addView(card, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        dialog.setContentView(viewport);
         dialog.show();
         Window window = dialog.getWindow();
         if (window != null) {
             DisplayMetrics metrics = getResources().getDisplayMetrics();
             int width = Math.min(metrics.widthPixels - dp(48), dp(520));
+            int state = window.getAttributes().softInputMode & WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE;
+            window.setSoftInputMode(state | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
             window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
         }
     }
@@ -1410,17 +1364,9 @@ public final class MainActivity extends Activity {
         titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         card.addView(titleView, withBottomMargin(matchWrap(), dp(10)));
 
-        LinearLayout rows = new LinearLayout(this);
-        rows.setOrientation(LinearLayout.VERTICAL);
         for (Action action : actions) {
-            rows.addView(actionRow(dialog, action), withBottomMargin(matchWrap(), dp(4)));
+            card.addView(actionRow(dialog, action), withBottomMargin(matchWrap(), dp(4)));
         }
-        ScrollView scroll = new ScrollView(this);
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.addView(rows);
-        int rowsHeight = Math.min(actions.size() * dp(70), dp(280));
-        card.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, rowsHeight));
 
         Button cancel = pill("取消", false);
         cancel.setOnClickListener(view -> dialog.dismiss());
@@ -1627,16 +1573,61 @@ public final class MainActivity extends Activity {
         input.setPadding(dp(14), dp(10), dp(14), dp(10));
     }
 
-    private void showCardMenu(SnapshotStore.Snapshot snapshot) {
+    private void showCardMenu(SnapshotStore.Snapshot snapshot, boolean readable) {
         Log.i("hoyoswitch", "card menu: " + snapshot.name);
         List<Action> actions = new ArrayList<>();
-        actions.add(new Action(R.drawable.ic_rename, "重命名", "修改卡片显示名称", false,
-                () -> renameDialog(snapshot)));
-        actions.add(new Action(R.drawable.ic_delete, "删除快照", "连同历史版本一起删除", true,
-                () -> deleteDialog(snapshot)));
+        actions.add(new Action(android.R.drawable.ic_menu_info_details, "快照详情", "查看时间、文件状态和账号密码备注",
+                false, () -> showSnapshotDetails(snapshot, readable)));
         actions.add(new Action(R.drawable.ic_history, "历史版本", "查看并回滚旧版本", false,
                 () -> historyDialog(snapshot)));
+        actions.add(new Action(R.drawable.ic_rename, "重命名", "修改卡片显示名称", false,
+                () -> renameDialog(snapshot)));
+        if (sortMode == SORT_FIXED) {
+            actions.add(new Action(android.R.drawable.ic_menu_sort_by_size, "上移卡片", "调整固定顺序",
+                    false, () -> moveCard(snapshot, -1)));
+            actions.add(new Action(android.R.drawable.ic_menu_sort_by_size, "下移卡片", "调整固定顺序",
+                    false, () -> moveCard(snapshot, 1)));
+        }
+        actions.add(new Action(R.drawable.ic_delete, "删除快照", "连同历史版本一起删除", true,
+                () -> deleteDialog(snapshot)));
         showActionSheet(snapshot.name, actions);
+    }
+
+    private void showSnapshotDetails(SnapshotStore.Snapshot snapshot, boolean readable) {
+        int present = 0;
+        for (SnapshotStore.Entry entry : snapshot.entries.values()) {
+            if (entry.present) {
+                present++;
+            }
+        }
+        SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
+        String details = "更新于 " + format.format(new Date(snapshot.createdAt))
+                + "\n状态文件：" + present + "/" + snapshot.entries.size()
+                + (snapshot.lastUsedAt > 0 ? "\n上次使用 " + format.format(new Date(snapshot.lastUsedAt)) : "")
+                + (readable ? "" : "\n快照无法读取，请检查文件或加密密钥。");
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        TextView title = dialogTitle(snapshot.name);
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        card.addView(title, withBottomMargin(matchWrap(), dp(8)));
+        card.addView(dialogMessage(details), withBottomMargin(matchWrap(), dp(12)));
+        card.addView(credentialsBlock(snapshot), withBottomMargin(matchWrap(), dp(12)));
+        Button close = pill("关闭", false);
+        close.setOnClickListener(view -> dialog.dismiss());
+        card.addView(close, matchWrap());
+        showDialog(dialog, card);
+    }
+
+    private void showAccountCredentials(SnapshotStore.Snapshot snapshot) {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("账号与密码"), withBottomMargin(matchWrap(), dp(10)));
+        card.addView(credentialsBlock(snapshot), withBottomMargin(matchWrap(), dp(12)));
+        Button close = pill("关闭", false);
+        close.setOnClickListener(view -> dialog.dismiss());
+        card.addView(close, matchWrap());
+        showDialog(dialog, card);
     }
 
     private void renameDialog(SnapshotStore.Snapshot snapshot) {
@@ -1745,7 +1736,7 @@ public final class MainActivity extends Activity {
                     }
                 });
             } catch (Exception error) {
-                appendLog("失败：" + error.getMessage());
+                reportOperationError(error);
                 main.post(() -> finishOperation(false));
             }
         }).start();
@@ -1767,8 +1758,9 @@ public final class MainActivity extends Activity {
                     });
                     try {
                         store.stopAndSwitchTo(target, this::appendLog);
+                        toast("已完成账号切换");
                     } catch (Exception error) {
-                        appendLog("失败：" + error.getMessage());
+                        reportOperationError(error);
                     } finally {
                         main.post(() -> finishOperation(true));
                     }
@@ -1782,18 +1774,40 @@ public final class MainActivity extends Activity {
             toast(selected.label + " 尚未适配，不能拍摄快照");
             return;
         }
-        // Root state is already reflected in the button's enabled state; probing it here would
-        // block the UI thread on the first su lookup.
-        captureNow(selected);
-    }
-
-    private void captureNow(GameProfile selected) {
-        String name = nameInput.getText().toString();
-        runOp("拍摄快照", () -> {
-            String id = store.captureAccount(selected, name);
-            appendLog("已保存快照 " + id);
-            main.post(() -> nameInput.setText(""));
+        if (busy) {
+            toast("上一个操作还没结束");
+            return;
+        }
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("拍摄" + selected.label + "快照"), withBottomMargin(matchWrap(), dp(8)));
+        card.addView(dialogMessage("无需停止游戏。留空时，已有快照保留原名称，新快照使用默认名称。"),
+                withBottomMargin(matchWrap(), dp(12)));
+        EditText input = new EditText(this);
+        input.setHint("快照名称（可选）");
+        input.setSingleLine(true);
+        styleInput(input);
+        card.addView(input, withBottomMargin(matchWrap(), dp(14)));
+        LinearLayout row = new LinearLayout(this);
+        Button cancel = pill("取消", false);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        Button save = pill("拍摄", true);
+        save.setOnClickListener(view -> {
+            String name = input.getText().toString();
+            dialog.dismiss();
+            runOp("拍摄快照", () -> {
+                String id = store.captureAccount(selected, name);
+                appendLog("已保存快照 " + id);
+                toast("已保存快照");
+            });
         });
+        row.addView(cancel, weightWrap(1f, dp(4)));
+        row.addView(save, weightWrap(1f, dp(4)));
+        card.addView(row, matchWrap());
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+        }
+        showDialog(dialog, card);
     }
 
     private void toggleFloating() {
@@ -1861,9 +1875,7 @@ public final class MainActivity extends Activity {
             try {
                 operation.run();
             } catch (Exception error) {
-                String message = error.getMessage() == null
-                        ? error.getClass().getSimpleName() : error.getMessage();
-                appendLog("失败：" + message);
+                reportOperationError(error);
             } finally {
                 main.post(() -> finishOperation(false));
             }
@@ -1905,6 +1917,16 @@ public final class MainActivity extends Activity {
     }
 
     private void toast(String message) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post(() -> toast(message));
+        } else if (!isFinishing() && !isDestroyed()) {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void reportOperationError(Exception error) {
+        String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+        appendLog("失败：" + message);
+        toast("操作失败：" + message);
     }
 }

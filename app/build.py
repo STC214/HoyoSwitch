@@ -11,6 +11,7 @@ SDK = Path(os.environ.get('ANDROID_SDK_ROOT') or os.environ.get('ANDROID_HOME') 
 TOOLS = SDK / 'build-tools' / '36.0.0'
 ANDROID = SDK / 'platforms' / 'android-36' / 'android.jar'
 OUTPUT = HERE / 'build'
+DIST = HERE.parent / 'dist'
 SRC = HERE / 'src'
 RELEASE = HERE / 'keystore'
 RELEASE_KEY = RELEASE / 'hoyoswitch-release.p12'
@@ -43,6 +44,13 @@ def cleanup(*paths):
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def publish_apk(signer, candidate, destination, *, release):
+    flags = ('--print-certs',) if release else ()
+    run(*signer, 'verify', '--verbose', *flags, candidate)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    candidate.replace(destination)
 
 
 def release_credentials():
@@ -88,7 +96,8 @@ def main():
     flat = OUTPUT / 'res.zip'
     unsigned = OUTPUT / 'unsigned.apk'
     aligned = OUTPUT / 'aligned.apk'
-    apk = OUTPUT / ('account-switch-release.apk' if release else 'account-switch.apk')
+    apk = DIST / ('account-switch-release.apk' if release else 'account-switch.apk')
+    candidate = OUTPUT / ('signed-release.apk' if release else 'signed-debug.apk')
     key = OUTPUT / 'local-test.p12'
     classes = OUTPUT / 'classes'
     generated = OUTPUT / 'gen'
@@ -131,8 +140,8 @@ def main():
         keystore, alias, password = release_credentials()
         run_with_password('Sign release APK', password, *signer, 'sign', '--ks', keystore,
                           '--ks-key-alias', alias, '--ks-pass', f'env:{PASSWORD_ENV}',
-                          '--v4-signing-enabled', 'false', '--out', apk, aligned)
-        run(*signer, 'verify', '--verbose', '--print-certs', apk)
+                          '--v4-signing-enabled', 'false', '--out', candidate, aligned)
+        publish_apk(signer, candidate, apk, release=True)
         cleanup(flat, unsigned, aligned)
         print(f'Release APK built: {apk}', flush=True)
         return
@@ -141,8 +150,8 @@ def main():
             'android', '-alias', 'local', '-keyalg', 'RSA', '-keysize', '2048', '-validity',
             '3650', '-dname', 'CN=Local Prototype')
     run(*signer, 'sign', '--ks', key, '--ks-key-alias', 'local', '--ks-pass', 'pass:android',
-        '--v4-signing-enabled', 'false', '--out', apk, aligned)
-    run(*signer, 'verify', '--verbose', apk)
+        '--v4-signing-enabled', 'false', '--out', candidate, aligned)
+    publish_apk(signer, candidate, apk, release=False)
     cleanup(flat, unsigned, aligned)
     print(f'APK built: {apk}', flush=True)
 

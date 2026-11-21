@@ -1,6 +1,7 @@
 # Build outputs
 /app/build/
 /prototype/build/
+/dist/
 *.apk
 *.aab
 *.idsig

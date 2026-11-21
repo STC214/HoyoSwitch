@@ -6,9 +6,11 @@
 
 ## 发布与待发布状态
 
+- **v1.6.5：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.5)（versionCode 58）。调整首屏和账号卡片，保留「账号与密码」直达入口，精简状态显示；签名校验通过后统一将本地 APK 放入 `dist/`。
+- **v1.6.5 验证边界：** 48 项 Python 测试、2 项 Java 回归及 Java 内存编译通过。真机横竖屏验证了分栏、拍摄弹窗的取消、运行详情、卡片和账号密码入口；未实际切换账号或执行真机杀进程测试。
 - **v1.6.4：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.4)（versionCode 57）。统一历史裁剪与列表排序，允许迁移失败后重试；快照目录交换和多文件账号切换增加进程中断恢复；PC 登录状态写入增加 Ctrl+C 回滚。
 - **v1.6.4 验证边界：** 47 项 Python 测试、2 项 Java 回归、Java 内存编译和正式 APK 签名校验。夹具覆盖交换中断、回滚中途再次失败及历史清理重试；未重新执行真机切换或真机杀进程测试。
-- **上一版：** [v1.6.3](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.3)（versionCode 56，提交 `bbccb49`）。发布时通过 47 项 Python 测试、2 项 Java 回归并验证原证书签名，未做真机安装或重新切换验收。
+- **v1.6.3：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.3)（versionCode 56，提交 `bbccb49`）。发布时通过 47 项 Python 测试、2 项 Java 回归并验证原证书签名，未做真机安装或重新切换验收。
 
 ## 2026-11-20 状态归档
 
