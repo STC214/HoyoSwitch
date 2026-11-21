@@ -43,8 +43,10 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /** One screen, one section per game: status, capture and account cards for the selected game. */
 public final class MainActivity extends Activity {
@@ -79,6 +81,7 @@ public final class MainActivity extends Activity {
     private boolean cardOpActive;
     private int focusedCardIndex = -1;
     private LinearLayout content;
+    private ViewGroup logHome;
     private View currentCardView;
     private boolean followCurrentCard;
 
@@ -98,6 +101,9 @@ public final class MainActivity extends Activity {
         loadFixedOrder();
         store = new SnapshotStore(this);
         setContentView(buildLayout());
+        if (sortToggle != null) {
+            sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
+        }
         if (state != null) {
             game = GameProfile.byPackage(state.getString("ui.game", game.pkg));
             saveGame();
@@ -355,6 +361,7 @@ public final class MainActivity extends Activity {
         right.addView(section04, matchWrap());
         right.addView(log, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(180)));
+        logHome = right;
 
         ScrollView rightScroll = new ScrollView(this);
         columnScroll = rightScroll;
@@ -471,6 +478,7 @@ public final class MainActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(0, 0, 0, dp(8));
         this.content = content;
+        this.logHome = content;
 
         // The hero copy scrolls with the list instead of staying pinned above the ScrollView.
         content.addView(headlineView, matchWrap());
@@ -662,6 +670,7 @@ public final class MainActivity extends Activity {
         }
         game = profile;
         saveGame();
+        loadFixedOrder();
         appendLog("切换到分栏：" + profile.label);
         refresh();
     }
@@ -712,8 +721,10 @@ public final class MainActivity extends Activity {
 
     private void seedFixedOrder() {
         List<SnapshotStore.Snapshot> snapshots = store.list(game);
+        // Seed from the current last-used order (descending activity time), independent of the
+        // now-active fixed sort mode.
+        snapshots.sort((left, right) -> Long.compare(activityTime(right), activityTime(left)));
         fixedOrder.clear();
-        sortSnapshots(snapshots);
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             fixedOrder.add(snapshot.id);
         }
@@ -742,7 +753,9 @@ public final class MainActivity extends Activity {
     }
 
     private static long activityTime(SnapshotStore.Snapshot snapshot) {
-        return snapshot.lastUsedAt > 0 ? snapshot.lastUsedAt : snapshot.createdAt;
+        // A capture/update refreshes createdAt while a switch refreshes lastUsedAt; the most
+        // recent of the two is the card's latest activity.
+        return Math.max(snapshot.lastUsedAt, snapshot.createdAt);
     }
 
     private ScrollView activeScroll() {
@@ -751,11 +764,14 @@ public final class MainActivity extends Activity {
 
     /** Smooth-scrolls so the currently logged-in card sits at the top of the viewport. */
     private void scrollToCard() {
+        scrollToView(currentCardView);
+    }
+
+    private void scrollToView(View target) {
         ScrollView scroll = activeScroll();
-        if (scroll == null || currentCardView == null) {
+        if (scroll == null || target == null) {
             return;
         }
-        View target = currentCardView;
         scroll.post(() -> {
             View child = scroll.getChildAt(0);
             if (child == null) {
@@ -781,7 +797,7 @@ public final class MainActivity extends Activity {
         }
         cardOpActive = true;
         moveLogBelowCard(snapshot.id);
-        scrollToCard();
+        scrollToView(cardViewFor(snapshot.id));
     }
 
     private void unfocusCard() {
@@ -798,11 +814,11 @@ public final class MainActivity extends Activity {
             return;
         }
         focusedCardIndex = cardIndex;
-        if (logSection != null && logSection.getParent() == content) {
-            content.removeView(logSection);
+        if (logSection != null && logSection.getParent() == logHome) {
+            logHome.removeView(logSection);
         }
-        if (logScroll != null && logScroll.getParent() == content) {
-            content.removeView(logScroll);
+        if (logScroll != null && logScroll.getParent() == logHome) {
+            logHome.removeView(logScroll);
         }
         int insertAt = cardIndex + 1;
         if (logSection != null && logSection.getParent() == null) {
@@ -815,13 +831,13 @@ public final class MainActivity extends Activity {
     }
 
     private void restoreLogToBottom() {
-        if (logSection != null && logSection.getParent() != content) {
+        if (logSection != null && logSection.getParent() != logHome) {
             ((ViewGroup) logSection.getParent()).removeView(logSection);
-            content.addView(logSection, matchWrap());
+            logHome.addView(logSection, matchWrap());
         }
-        if (logScroll != null && logScroll.getParent() != content) {
+        if (logScroll != null && logScroll.getParent() != logHome) {
             ((ViewGroup) logScroll.getParent()).removeView(logScroll);
-            content.addView(logScroll, new LinearLayout.LayoutParams(
+            logHome.addView(logScroll, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
         }
         focusedCardIndex = -1;
@@ -835,6 +851,11 @@ public final class MainActivity extends Activity {
             }
         }
         return -1;
+    }
+
+    private View cardViewFor(String snapshotId) {
+        int index = cardIndexFor(snapshotId);
+        return index < 0 ? null : cardList.getChildAt(index);
     }
 
     private void moveCard(SnapshotStore.Snapshot snapshot, int delta) {
@@ -856,14 +877,24 @@ public final class MainActivity extends Activity {
     }
 
     private void ensureFixedOrder(List<SnapshotStore.Snapshot> snapshots) {
-        boolean changed = false;
+        Set<String> present = new HashSet<>();
         for (SnapshotStore.Snapshot snapshot : snapshots) {
-            if (!fixedOrder.contains(snapshot.id)) {
-                fixedOrder.add(snapshot.id);
-                changed = true;
+            present.add(snapshot.id);
+        }
+        List<String> kept = new ArrayList<>();
+        for (String id : fixedOrder) {
+            if (present.contains(id)) {
+                kept.add(id);
             }
         }
-        if (changed) {
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            if (!kept.contains(snapshot.id)) {
+                kept.add(snapshot.id);
+            }
+        }
+        if (!kept.equals(fixedOrder)) {
+            fixedOrder.clear();
+            fixedOrder.addAll(kept);
             saveFixedOrder();
         }
     }
