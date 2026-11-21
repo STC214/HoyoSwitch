@@ -80,6 +80,7 @@ public final class MainActivity extends Activity {
     private final List<String> fixedOrder = new ArrayList<>();
     private boolean cardOpActive;
     private int focusedCardIndex = -1;
+    private String focusedCardId;
     private LinearLayout content;
     private ViewGroup logHome;
     private View currentCardView;
@@ -350,6 +351,7 @@ public final class MainActivity extends Activity {
 
         ScrollView leftScroll = new ScrollView(this);
         leftScroll.addView(left);
+        leftScroll.setOnTouchListener((view, event) -> cardOpActive);
         LinearLayout.LayoutParams leftParams = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.MATCH_PARENT, 0.95f);
         leftParams.rightMargin = dp(16);
@@ -366,6 +368,7 @@ public final class MainActivity extends Activity {
         ScrollView rightScroll = new ScrollView(this);
         columnScroll = rightScroll;
         rightScroll.addView(right);
+        rightScroll.setOnTouchListener((view, event) -> cardOpActive);
         // Focus restore can scroll a column down on first layout; start both at the top.
         leftScroll.post(() -> leftScroll.scrollTo(0, 0));
         rightScroll.post(() -> rightScroll.scrollTo(0, 0));
@@ -814,6 +817,7 @@ public final class MainActivity extends Activity {
             return;
         }
         focusedCardIndex = cardIndex;
+        focusedCardId = snapshotId;
         if (logSection != null && logSection.getParent() == logHome) {
             logHome.removeView(logSection);
         }
@@ -832,15 +836,22 @@ public final class MainActivity extends Activity {
 
     private void restoreLogToBottom() {
         if (logSection != null && logSection.getParent() != logHome) {
-            ((ViewGroup) logSection.getParent()).removeView(logSection);
+            ViewGroup parent = (ViewGroup) logSection.getParent();
+            if (parent != null) {
+                parent.removeView(logSection);
+            }
             logHome.addView(logSection, matchWrap());
         }
         if (logScroll != null && logScroll.getParent() != logHome) {
-            ((ViewGroup) logScroll.getParent()).removeView(logScroll);
+            ViewGroup parent = (ViewGroup) logScroll.getParent();
+            if (parent != null) {
+                parent.removeView(logScroll);
+            }
             logHome.addView(logScroll, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
         }
         focusedCardIndex = -1;
+        focusedCardId = null;
     }
 
     private int cardIndexFor(String snapshotId) {
@@ -920,10 +931,6 @@ public final class MainActivity extends Activity {
                 store.cleanup(selected);
             }
             snapshots = store.list(selected);
-            if (sortMode == SORT_FIXED) {
-                ensureFixedOrder(snapshots);
-            }
-            sortSnapshots(snapshots);
             try {
                 current = store.detectCurrent(selected);
             } catch (IOException error) {
@@ -938,6 +945,12 @@ public final class MainActivity extends Activity {
                 if (generation != refreshGeneration) {
                     return;
                 }
+                // Sort and fixed-order maintenance run here, on the main thread, so a stale
+                // background refresh can never overwrite the fixed order of a newer tab.
+                if (sortMode == SORT_FIXED) {
+                    ensureFixedOrder(listed);
+                }
+                sortSnapshots(listed);
                 SnapshotStore.Snapshot matched = match(currentNow, listed);
                 String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
                 String gameText = versionNow.isEmpty()
@@ -1137,6 +1150,11 @@ public final class MainActivity extends Activity {
             card.addView(row, matchWrap());
 
             cardList.addView(card, withBottomMargin(matchWrap(), dp(14)));
+        }
+        // A refresh that lands while an operation is focused must keep the log pinned under the
+        // target card (removeAllViews above would otherwise detach it).
+        if (cardOpActive && focusedCardId != null) {
+            moveLogBelowCard(focusedCardId);
         }
         restoreScroll(scroll, savedScrollY);
     }
