@@ -44,8 +44,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /** One screen, one section per game: status, capture and account cards for the selected game. */
@@ -950,6 +952,14 @@ public final class MainActivity extends Activity {
                 store.cleanup(selected);
             }
             snapshots = store.list(selected);
+            // Precompute per-card identity and decryptability here, off the main thread, so the
+            // result callback only consumes these instead of doing disk/crypto/SQLite work.
+            final Map<String, String> midById = new LinkedHashMap<>();
+            final Map<String, Boolean> readableById = new LinkedHashMap<>();
+            for (SnapshotStore.Snapshot snapshot : snapshots) {
+                midById.put(snapshot.id, store.accountMid(snapshot));
+                readableById.put(snapshot.id, store.decryptable(snapshot));
+            }
             try {
                 current = store.detectCurrent(selected);
             } catch (IOException error) {
@@ -979,7 +989,7 @@ public final class MainActivity extends Activity {
                     }
                 }
                 sortSnapshots(listed);
-                SnapshotStore.Snapshot matched = match(currentNow, listed);
+                SnapshotStore.Snapshot matched = match(currentNow, listed, midById);
                 String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
                 String gameText = versionNow.isEmpty()
                         ? "未检测到" + selected.label
@@ -995,7 +1005,7 @@ public final class MainActivity extends Activity {
                 launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
                 launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
                 renderTabs();
-                renderCards(listed, matched == null ? null : matched.id, selected);
+                renderCards(listed, matched == null ? null : matched.id, selected, readableById);
                 if (followCurrentCard) {
                     followCurrentCard = false;
                     scrollToCard();
@@ -1022,13 +1032,24 @@ public final class MainActivity extends Activity {
         }
     }
 
+    /** Background-thread variant: computes account identity on the calling thread. */
     private SnapshotStore.Snapshot match(SnapshotStore.Current current,
                                          List<SnapshotStore.Snapshot> snapshots) {
+        Map<String, String> mids = new LinkedHashMap<>();
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            mids.put(snapshot.id, store.accountMid(snapshot));
+        }
+        return match(current, snapshots, mids);
+    }
+
+    private SnapshotStore.Snapshot match(SnapshotStore.Current current,
+                                         List<SnapshotStore.Snapshot> snapshots,
+                                         Map<String, String> midById) {
         if (current == null || !current.loggedIn || current.mid.isEmpty()) {
             return null;
         }
         for (SnapshotStore.Snapshot snapshot : snapshots) {
-            if (current.mid.equals(store.accountMid(snapshot))) {
+            if (current.mid.equals(midById.get(snapshot.id))) {
                 return snapshot;
             }
         }
@@ -1051,7 +1072,7 @@ public final class MainActivity extends Activity {
     }
 
     private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
-                             GameProfile selected) {
+                             GameProfile selected, Map<String, Boolean> readableById) {
         ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
         int savedScrollY = scroll == null ? 0 : scroll.getScrollY();
         currentCardView = null;
@@ -1094,7 +1115,7 @@ public final class MainActivity extends Activity {
             if (isCurrent) {
                 currentCardView = card;
             }
-            boolean readable = store.decryptable(snapshot);
+            boolean readable = Boolean.TRUE.equals(readableById.get(snapshot.id));
             boolean switchable = snapshot.game.switchVerified;
             GradientDrawable cardFill = isCurrent
                     ? surface(R.color.card_bg, R.color.accent, 26)
