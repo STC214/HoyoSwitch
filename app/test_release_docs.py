@@ -14,10 +14,16 @@ class ReleaseDocsTest(unittest.TestCase):
     def test_readme_donation_and_disclaimer_match_app(self):
         readme = (ROOT / 'README.md').read_text(encoding='utf-8')
         resources = ET.parse(ROOT / 'app' / 'res' / 'values' / 'project_info.xml').getroot()
-        disclaimer = resources.findtext("string[@name='about_disclaimer']")
-        donation = resources.findtext("string[@name='donation_intro']")
-        self.assertTrue(disclaimer)
-        self.assertTrue(donation)
+        def styled_markdown(name):
+            resource = resources.find(f"string[@name='{name}']")
+            self.assertIsNotNone(resource)
+            self.assertTrue(resource.findall('b'), f'{name} should emphasize key text')
+            return (resource.text or '') + ''.join(
+                f'**{span.text}**{span.tail or ""}' for span in resource
+            )
+
+        disclaimer = styled_markdown('about_disclaimer')
+        donation = styled_markdown('donation_intro')
         lines = readme.splitlines()
         self.assertEqual(lines[2], '## 捐赠二维码')
         donate, notice = readme.split('## 免责声明\n', 1)
@@ -28,7 +34,7 @@ class ReleaseDocsTest(unittest.TestCase):
             self.assertIn(f'src="QRcode/{name}"', donate)
             self.assertTrue((ROOT / 'QRcode' / name).is_file())
 
-    def test_published_version_matches_manifest(self):
+    def test_documented_version_matches_manifest(self):
         manifest = ET.parse(ROOT / 'app' / 'AndroidManifest.xml').getroot()
         version = manifest.get(f'{ANDROID}versionName')
         version_code = manifest.get(f'{ANDROID}versionCode')
@@ -37,7 +43,7 @@ class ReleaseDocsTest(unittest.TestCase):
         text = app_doc.read_text(encoding='utf-8')
         self.assertIn(f'当前版本 **{version}**', readme)
         self.assertIn(f'当前版本 **{version}**（versionCode {version_code}）', text)
-        self.assertIn(f'/releases/tag/v{version}>', readme)
+        self.assertIn('GitHub Release 下载（已发布版本）：<https://github.com/STC214/HoyoSwitch/releases>', readme)
 
     def test_markdown_has_no_control_characters_in_text(self):
         for path in [ROOT / 'README.md', *(ROOT / 'docs').rglob('*.md')]:

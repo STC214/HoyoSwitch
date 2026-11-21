@@ -611,7 +611,7 @@ public final class MainActivity extends Activity {
         Dialog dialog = baseDialog();
         LinearLayout card = dialogCard();
         card.addView(dialogTitle("捐赠"), withBottomMargin(matchWrap(), dp(10)));
-        card.addView(dialogMessage(getString(R.string.donation_intro)), matchWrap());
+        card.addView(dialogMessage(getText(R.string.donation_intro)), matchWrap());
         addDonationCode(card, "微信赞赏", R.drawable.donation_wechat);
         addDonationCode(card, "支付宝", R.drawable.donation_alipay);
         closeInfoPage(dialog, card);
@@ -633,7 +633,7 @@ public final class MainActivity extends Activity {
         Dialog dialog = baseDialog();
         LinearLayout card = dialogCard();
         card.addView(dialogTitle("免责声明"), withBottomMargin(matchWrap(), dp(10)));
-        card.addView(dialogMessage(getString(R.string.about_disclaimer)), matchWrap());
+        card.addView(dialogMessage(getText(R.string.about_disclaimer)), matchWrap());
 
         card.addView(section("关于本项目"), matchWrap());
         String projectUrl = getString(R.string.project_url);
@@ -1381,7 +1381,7 @@ public final class MainActivity extends Activity {
         return title;
     }
 
-    private TextView dialogMessage(String text) {
+    private TextView dialogMessage(CharSequence text) {
         TextView message = new TextView(this);
         message.setText(text);
         message.setTextSize(13);
