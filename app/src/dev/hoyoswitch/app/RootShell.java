@@ -89,9 +89,8 @@ final class RootShell {
                     failures.append(candidate).append(":timeout ");
                     continue;
                 }
-                outThread.join(3000);
-                errThread.join(3000);
-                byte[] out = stdout.bytes();
+                byte[] out = stdout.await(outThread, 3000);
+                stderr.await(errThread, 3000);
                 int exit = process.exitValue();
                 if (exit == 0 && new String(out, StandardCharsets.UTF_8).contains("uid=0")) {
                     resolved = candidate;
@@ -153,10 +152,10 @@ final class RootShell {
                 process.destroyForcibly();
                 throw new IOException("root command timed out: " + command);
             }
-            outThread.join(5000);
-            errThread.join(5000);
-            return new Result(process.exitValue(), stdout.bytes(),
-                    stderr.text().trim());
+            byte[] out = stdout.await(outThread, 5000);
+            byte[] err = stderr.await(errThread, 5000);
+            return new Result(process.exitValue(), out,
+                    new String(err, StandardCharsets.UTF_8).trim());
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new IOException("root command interrupted", error);
@@ -171,6 +170,7 @@ final class RootShell {
     private static final class Collector implements Runnable {
         private final InputStream stream;
         private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        private IOException failure;
 
         Collector(InputStream stream) {
             this.stream = stream;
@@ -181,20 +181,23 @@ final class RootShell {
             byte[] chunk = new byte[8192];
             try (InputStream input = stream) {
                 int read;
-                while ((read = input.read(chunk)) > 0) {
+                while ((read = input.read(chunk)) != -1) {
                     buffer.write(chunk, 0, read);
                 }
-            } catch (IOException ignored) {
-                // A killed child closes its pipes; keep whatever was read.
+            } catch (IOException error) {
+                failure = error;
             }
         }
 
-        synchronized byte[] bytes() {
+        byte[] await(Thread thread, long timeoutMillis) throws IOException, InterruptedException {
+            thread.join(timeoutMillis);
+            if (thread.isAlive()) {
+                throw new IOException("root command output timed out: " + thread.getName());
+            }
+            if (failure != null) {
+                throw new IOException("root command output read failed: " + thread.getName(), failure);
+            }
             return buffer.toByteArray();
-        }
-
-        synchronized String text() {
-            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
         }
     }
 

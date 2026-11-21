@@ -258,7 +258,7 @@ final class SnapshotStore {
                         missing.present = false;
                         snapshot.entries.put(relative, missing);
                     } else {
-                        snapshot.entries.put(relative, storeEntry(snapshot, relative, bytes));
+                        snapshot.entries.put(relative, storeEntry(snapshot, relative, bytes, false));
                     }
                 }
             }
@@ -316,11 +316,12 @@ final class SnapshotStore {
                     + (content.err.isEmpty() ? "" : " -> " + content.err));
         }
         byte[] bytes = stable ? stableRead(path, content.out) : content.out;
-        return storeEntry(snapshot, relative, bytes);
+        return storeEntry(snapshot, relative, bytes, true);
     }
 
     /** Encrypts {@code bytes} into the snapshot dir and fills the entry metadata + hash. */
-    private Entry storeEntry(Snapshot snapshot, String relative, byte[] bytes) throws IOException {
+    private Entry storeEntry(Snapshot snapshot, String relative, byte[] bytes, boolean checkSourceSize)
+            throws IOException {
         Entry entry = new Entry();
         entry.path = relative;
         entry.present = true;
@@ -328,6 +329,11 @@ final class SnapshotStore {
         entry.sha256 = sha256(bytes);
         Entry metadata = stat(snapshot.game.path(relative));
         requireRestoreMetadata(metadata, relative);
+        // Database groups already validate each framed length during the group read.
+        if (checkSourceSize && metadata.size != bytes.length) {
+            throw new IOException("读取字节数与源文件大小不一致: " + relative
+                    + " (" + bytes.length + "/" + metadata.size + ")");
+        }
         entry.uid = metadata.uid;
         entry.gid = metadata.gid;
         entry.mode = metadata.mode;
@@ -1320,10 +1326,15 @@ final class SnapshotStore {
         Snapshot current = reload(snapshot);
         Snapshot candidate;
         try {
-            // Validate the archived manifest before the current version is touched.
+            // A valid manifest alone does not prove the archived payloads are still intact.
             candidate = readManifest(snapshot.game, entry.dir);
         } catch (JSONException error) {
             throw new IOException("历史版本清单损坏，未回滚", error);
+        }
+        try {
+            verifyRestoreSnapshot(candidate);
+        } catch (IOException error) {
+            throw new IOException("历史版本校验失败，当前版本未改动: " + error.getMessage(), error);
         }
         File archived = moveToArchive(snapshot.dir);
         if (archived == null) {
@@ -1524,7 +1535,7 @@ final class SnapshotStore {
     private byte[] readVerifiedSwitchPayload(Snapshot target, Entry entry) throws IOException {
         requireRestoreMetadata(entry, entry.path);
         byte[] data = readSnapshot(target, entry.path);
-        if (!sha256(data).equals(entry.sha256)) {
+        if (data.length != entry.size || !sha256(data).equals(entry.sha256)) {
             throw new IOException("快照文件已损坏: " + entry.path);
         }
         return data;
@@ -1537,11 +1548,11 @@ final class SnapshotStore {
         }
     }
 
-    /** Validate the entire rollback set before starting a device write. */
+    /** Validate all entries and payloads before replacing a live state or saved version. */
     private void verifyRestoreSnapshot(Snapshot snapshot) throws IOException {
         for (String relative : snapshot.game.files) {
             if (snapshot.entry(relative) == null) {
-                throw new IOException("安全快照缺少条目: " + relative);
+                throw new IOException("快照缺少条目: " + relative);
             }
         }
         for (Entry entry : snapshot.entries.values()) {

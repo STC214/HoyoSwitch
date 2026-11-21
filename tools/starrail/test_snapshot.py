@@ -4,6 +4,7 @@ Run from the repository root:  python -m unittest discover -s tools/starrail -p 
 """
 
 import io
+import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -78,6 +79,69 @@ class SelectTest(unittest.TestCase):
         self.assertFalse(chosen[0]['present'])
 
 
+class ManifestTest(unittest.TestCase):
+    def test_invalid_manifest_is_rejected_before_device_access(self):
+        entry = dict(path=snapshot.PREFS[0], present=True, sha256=device.digest(b'x'), size=1,
+                     uid='1', gid='1', mode='600', context='ctx')
+        record = mock.MagicMock()
+        manifest_file = record.__truediv__.return_value
+        manifest_file.is_file.return_value = True
+        for files in ([dict(entry, mode='bad')], [dict(entry, path='unknown.xml')],
+                      [entry, entry], [dict(entry, size=-1)], [dict(entry, present='true')]):
+            with self.subTest(files=files):
+                manifest_file.read_text.return_value = json.dumps(dict(data_dir=snapshot.DATA_DIR, files=files))
+                remote = mock.Mock()
+                with self.assertRaises(ValueError):
+                    snapshot.restore(remote, record, True)
+                self.assertEqual(remote.mock_calls, [])
+        valid = dict(data_dir=snapshot.DATA_DIR, files=[entry])
+        manifest_file.read_text.return_value = json.dumps(valid)
+        self.assertEqual(snapshot.load_manifest(record), valid)
+
+    def test_local_size_must_match_manifest_even_if_hash_matches(self):
+        entry = dict(path=snapshot.PREFS[0], present=True, sha256=device.digest(b'x'), size=2)
+        local = mock.Mock()
+        local.is_file.return_value = True
+        local.read_bytes.return_value = b'x'
+        with mock.patch.object(snapshot, 'local_path', return_value=local):
+            issues, prepared = snapshot.inspect_local(mock.Mock(), {'files': [entry]}, {entry['path']})
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(prepared, {})
+
+
+class SelectedRemoteReadsTest(unittest.TestCase):
+    def test_only_limits_diff_and_restore_reads(self):
+        selected = snapshot.PREFS[0]
+        unrelated = snapshot.DATABASES[0]
+        path = f'{snapshot.DATA_DIR}/{selected}'
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
+        payload = b'snapshot'
+        manifest = {'files': [dict(path=relative, present=True, sha256=device.digest(payload), **metadata)
+                              for relative in (selected, unrelated)]}
+        for action in ('diff', 'dry-run', 'apply'):
+            with self.subTest(action=action):
+                state = {path: payload if action == 'diff' else b'old'}
+                remote = mock.Mock()
+                remote.game_pids.return_value = []
+                remote.info.side_effect = {path: metadata}.__getitem__
+                remote.read.side_effect = state.__getitem__
+                remote.write.side_effect = state.__setitem__
+                with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
+                        mock.patch.object(snapshot, 'inspect_local', return_value=([], {selected: payload})), \
+                        mock.patch.object(snapshot, 'capture', return_value='fixture') as safety, \
+                        redirect_stdout(io.StringIO()):
+                    if action == 'diff':
+                        status = snapshot.command_diff(remote, mock.Mock(), [selected])
+                    else:
+                        status = snapshot.restore(remote, mock.Mock(), action == 'apply', [selected])
+                self.assertEqual(status, 0)
+                self.assertEqual(safety.call_count, int(action == 'apply'))
+                if action == 'apply':
+                    remote.write.assert_called_once_with(path, payload)
+                else:
+                    remote.write.assert_not_called()
+
+
 class SidecarIssuesTest(unittest.TestCase):
     def _device(self, present=()):
         class FakeDevice:
@@ -135,9 +199,9 @@ class SidecarIssuesTest(unittest.TestCase):
     def test_journal_only_restore_checks_main_before_any_write(self):
         db = snapshot.DATABASES[0]
         journal = db + '-journal'
-        metadata = dict(uid='1', gid='1', mode='600', context='ctx', size=4)
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
         payload = {db: b'main', journal: b'new journal'}
-        manifest = {'files': [dict(path=path, present=True, sha256=device.digest(data), **metadata)
+        manifest = {'files': [dict(path=path, present=True, sha256=device.digest(data), size=len(data), **metadata)
                               for path, data in payload.items()]}
         prefix = snapshot.DATA_DIR + '/'
         for selected, main, expected_status, expected_writes in (
@@ -187,7 +251,7 @@ class RestorePayloadTest(unittest.TestCase):
         path = snapshot.DATA_DIR + '/' + rel
         original, verified = b'original', b'verified'
         metadata = dict(uid='1', gid='1', mode='600', context='ctx')
-        entry = dict(path=rel, present=True, sha256=device.digest(verified), **metadata)
+        entry = dict(path=rel, present=True, sha256=device.digest(verified), size=len(verified), **metadata)
         state = {path: original}
         remote = mock.Mock()
         remote.game_pids.return_value = []

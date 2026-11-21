@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -65,8 +66,36 @@ def load_manifest(record):
     if not path.is_file():
         raise RuntimeError(f'{record}: not a snapshot directory (missing {MANIFEST})')
     manifest = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(manifest, dict):
+        raise ValueError(f'{path}: expected a manifest object')
     if manifest.get('data_dir') != DATA_DIR:
         raise RuntimeError(f'{record}: snapshot was taken from {manifest.get("data_dir")}')
+    entries = manifest.get('files')
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f'{path}: files must be a nonempty list')
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f'{path}: invalid file entry')
+        relative = entry.get('path')
+        if not isinstance(relative, str) or relative not in TARGETS or relative in seen:
+            raise ValueError(f'{path}: unknown or duplicate file entry: {relative!r}')
+        seen.add(relative)
+        present = entry.get('present')
+        if type(present) is not bool:
+            raise ValueError(f'{path}: {relative}: invalid present flag')
+        if not present:
+            continue
+        for key, pattern in (('uid', r'[0-9]+'), ('gid', r'[0-9]+'),
+                             ('mode', r'[0-7]{1,4}'), ('sha256', r'[0-9a-f]{64}')):
+            value = entry.get(key)
+            if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                raise ValueError(f'{path}: {relative}: invalid {key}')
+        if not isinstance(entry.get('context'), str):
+            raise ValueError(f'{path}: {relative}: invalid context')
+        size = entry.get('size')
+        if type(size) is not int or size < 0:
+            raise ValueError(f'{path}: {relative}: invalid size')
     return manifest
 
 
@@ -120,9 +149,11 @@ def capture(device, record=None):
     return record
 
 
-def remote_state(device, manifest):
+def remote_state(device, manifest, scope=None):
     rows = []
     for entry in manifest['files']:
+        if scope is not None and entry['path'] not in scope:
+            continue
         path = f'{DATA_DIR}/{entry["path"]}'
         info = device.info(path)
         if not entry['present']:
@@ -210,7 +241,7 @@ def inspect_local(record, manifest, retain=()):
             problems.append(f'{relative}: missing from the snapshot copy')
             continue
         data = path.read_bytes()
-        if digest(data) != entry['sha256']:
+        if len(data) != entry['size'] or digest(data) != entry['sha256']:
             problems.append(f'{relative}: snapshot copy does not match its manifest')
         elif relative in retain:
             prepared[relative] = data
@@ -230,7 +261,7 @@ def restore(device, record, apply, only=()):
     if device.game_pids():
         print(f'{device.serial}: {DATA_DIR} is in use, stop the game first', file=sys.stderr)
         return 1
-    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
+    rows = remote_state(device, manifest, wanted)
     differing = show(rows)
     stale = sidecar_issues(device, manifest, wanted)
     if stale:
@@ -277,7 +308,7 @@ def restore(device, record, apply, only=()):
                 return 1
             print(f'{rel}: owner/mode/context restored')
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
-    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
+    rows = remote_state(device, manifest, wanted)
     leftover = show(rows)
     stale = sidecar_issues(device, manifest, wanted, pending_writes=False)
     if stale:
@@ -311,7 +342,7 @@ def command_verify(device, record, remote):
 def command_diff(device, record, only=()):
     manifest = load_manifest(record)
     wanted = {entry['path'] for entry in select(manifest['files'], only)}
-    rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
+    rows = remote_state(device, manifest, wanted)
     differing = show(rows)
     sidecar = sidecar_issues(device, manifest, wanted, pending_writes=False)
     for issue in sidecar:

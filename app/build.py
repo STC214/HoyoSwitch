@@ -15,10 +15,26 @@ SRC = HERE / 'src'
 RELEASE = HERE / 'keystore'
 RELEASE_KEY = RELEASE / 'hoyoswitch-release.p12'
 RELEASE_PROPS = RELEASE / 'keystore.txt'
+PASSWORD_ENV = 'HOYOSWITCH_RELEASE_STOREPASS'
 
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
+
+
+def run_with_password(step, password, *args):
+    env = dict(os.environ, **{PASSWORD_ENV: password})
+    try:
+        result = subprocess.run([str(arg) for arg in args], env=env,
+                                capture_output=True, text=True, errors='replace')
+    except OSError as error:
+        message = str(error).replace(password, '[redacted]')
+        raise SystemExit(f'{step}: {message}') from None
+    if result.returncode != 0:
+        diagnostics = '\n'.join(part.strip() for part in (result.stderr, result.stdout) if part.strip())
+        diagnostics = diagnostics.replace(password, '[redacted]')
+        suffix = f'\n{diagnostics}' if diagnostics else ''
+        raise SystemExit(f'{step} failed (exit {result.returncode}){suffix}')
 
 
 def cleanup(*paths):
@@ -34,9 +50,11 @@ def release_credentials():
     RELEASE.mkdir(parents=True, exist_ok=True)
     if not RELEASE_KEY.exists():
         password = secrets.token_urlsafe(18)
-        run('keytool', '-genkeypair', '-storetype', 'PKCS12', '-keystore', RELEASE_KEY,
-            '-storepass', password, '-alias', 'hoyoswitch', '-keyalg', 'RSA', '-keysize',
-            '4096', '-validity', '10000', '-dname', 'CN=HoyoSwitch, O=STC, C=CN')
+        run_with_password('Generate release key', password, 'keytool', '-genkeypair',
+                          '-storetype', 'PKCS12', '-keystore', RELEASE_KEY,
+                          '-storepass:env', PASSWORD_ENV, '-alias', 'hoyoswitch', '-keyalg',
+                          'RSA', '-keysize', '4096', '-validity', '10000', '-dname',
+                          'CN=HoyoSwitch, O=STC, C=CN')
         RELEASE_PROPS.write_text(
             f'keystore={RELEASE_KEY}\nalias=hoyoswitch\nstorepass={password}\n',
             encoding='utf-8')
@@ -111,8 +129,9 @@ def main():
     signer = ('java', '-jar', TOOLS / 'lib' / 'apksigner.jar')
     if release:
         keystore, alias, password = release_credentials()
-        run(*signer, 'sign', '--ks', keystore, '--ks-key-alias', alias, '--ks-pass',
-            f'pass:{password}', '--v4-signing-enabled', 'false', '--out', apk, aligned)
+        run_with_password('Sign release APK', password, *signer, 'sign', '--ks', keystore,
+                          '--ks-key-alias', alias, '--ks-pass', f'env:{PASSWORD_ENV}',
+                          '--v4-signing-enabled', 'false', '--out', apk, aligned)
         run(*signer, 'verify', '--verbose', '--print-certs', apk)
         cleanup(flat, unsigned, aligned)
         print(f'Release APK built: {apk}', flush=True)
