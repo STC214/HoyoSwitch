@@ -158,8 +158,12 @@ def apply_change(device, path, original, data, before_value, after_value):
     meta = backup(record, path, original, before_value, after_value, device)
     print(f'backup={record}')
     print(f'sha256_before={meta["sha256_before"]}')
+    failure_status = 1
     try:
         problems = write_checked(device, path, data, after_value, info_before)
+    except KeyboardInterrupt:
+        failure_status = 130
+        problems = ['write or read-back interrupted by Ctrl+C']
     except Exception as error:  # noqa: BLE001 - any failure must still roll back
         print(f'write verification raised: {error}', file=sys.stderr)
         problems = [f'write verification raised: {error}']
@@ -170,15 +174,18 @@ def apply_change(device, path, original, data, before_value, after_value):
         try:
             restore_problems = write_checked(device, path, original, before_value, info_before,
                                              repair_metadata=True)
+        except KeyboardInterrupt:
+            print(f'rollback interrupted; original backup is at {record}', file=sys.stderr)
+            return 130
         except Exception as error:  # noqa: BLE001 - report instead of crashing silently
-            print(f'restore raised: {error}', file=sys.stderr)
-            return 1
+            print(f'restore raised: {error}; original backup is at {record}', file=sys.stderr)
+            return failure_status
         if restore_problems:
             for line in restore_problems:
                 print(f'  restore: {line}', file=sys.stderr)
-            return 1
+            return failure_status
         print('backup restored and verified; device is back at the original state')
-        return 1
+        return failure_status
     print(f'login_status {previous} -> {after_value} verified by read-back')
     print(f'sha256_after={digest(data)}')
     return 0

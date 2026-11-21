@@ -549,7 +549,10 @@ public final class MainActivity extends Activity {
         captureButton = pill("拍摄快照", true);
         captureButton.setOnClickListener(view -> capture());
         launchButton = pill("启动游戏", false);
-        launchButton.setOnClickListener(view -> runOp("启动 " + game.label, game::launch));
+        launchButton.setOnClickListener(view -> {
+            GameProfile selected = game;
+            runOp("启动 " + selected.label, () -> store.launchGame(selected));
+        });
         Button refreshButton = pill("刷新", false);
         refreshButton.setOnClickListener(view -> refresh());
         primaryRow.addView(captureButton, weightWrap(1.4f, dp(4)));
@@ -971,29 +974,29 @@ public final class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 boolean rooted = RootShell.isRooted();
-                boolean running;
+                Boolean running;
                 String version;
                 try {
                     running = selected.isRunning();
                     version = selected.version();
                 } catch (IOException error) {
-                    running = false;
+                    running = null;
                     version = "";
                 }
                 SnapshotStore.RefreshData data = store.readRefreshData(selected, !busy);
-                final boolean runningNow = running;
+                final Boolean runningNow = running;
                 final String versionNow = version;
                 main.post(() -> finishRefresh(selected, generation, data, rooted,
                         runningNow, versionNow));
             } catch (RuntimeException error) {
                 Log.w("hoyoswitch", "snapshot refresh failed", error);
-                main.post(() -> finishRefresh(selected, generation, null, false, false, ""));
+                main.post(() -> finishRefresh(selected, generation, null, false, null, ""));
             }
         }, "snapshot-refresh").start();
     }
 
     private void finishRefresh(GameProfile selected, int generation, SnapshotStore.RefreshData data,
-                               boolean rooted, boolean running, String version) {
+                               boolean rooted, Boolean running, String version) {
         refreshInFlight = false;
         if (!pageResumed || isFinishing() || isDestroyed()) {
             return;
@@ -1016,11 +1019,14 @@ public final class MainActivity extends Activity {
         String gameText = version.isEmpty() ? "未检测到" + selected.label
                 : selected.label + " " + version;
         displayedStatusPrefix = rootText + " · " + gameText + " · "
-                + (running ? "游戏运行中" : "游戏已停止");
+                + (running == null ? "进程状态未知" : (running ? "游戏运行中" : "游戏已停止"));
+        if (!data.recoveryError.isEmpty()) {
+            displayedStatusPrefix += " · " + data.recoveryError;
+        }
         renderDisplayedCards(selected);
-        captureButton.setEnabled(rooted && !busy);
+        captureButton.setEnabled(rooted && !busy && data.recoveryError.isEmpty());
         captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
-        launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
+        launchButton.setEnabled(!selected.activity.isEmpty() && !busy && data.recoveryError.isEmpty());
         launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
         if (followCurrentCard) {
             followCurrentCard = false;

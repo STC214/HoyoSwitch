@@ -127,12 +127,15 @@ class BackupTest(unittest.TestCase):
 
 class RestoreTest(unittest.TestCase):
     def test_restore_preserves_previous_content_on_write_or_readback_failure(self):
+        import io
         import json
         import tempfile
+        from contextlib import redirect_stderr
         from pathlib import Path
 
         target = BASIC.replace(b'value="true"', b'value="false"')
-        for previous, failure in ((BASIC, 'partial-write'), (BASIC, 'mismatch'), (BASIC, None),
+        for previous, failure in ((BASIC, 'partial-write'), (BASIC, 'interrupt'), (BASIC, 'interrupt-twice'),
+                                  (BASIC, 'mismatch'), (BASIC, None),
                                   (b'<map><boolean', 'partial-write'), (b'<map><boolean', None),
                                   (BASIC, 'metadata')):
             with self.subTest(previous=previous, failure=failure), tempfile.TemporaryDirectory() as tmp:
@@ -150,8 +153,13 @@ class RestoreTest(unittest.TestCase):
 
                 def write(path, data):
                     self.assertEqual(next(backups.glob('*/original.xml')).read_bytes(), previous)
-                    if data == target and failure == 'partial-write':
+                    if data == previous and failure == 'interrupt-twice':
+                        raise KeyboardInterrupt()
+                    if data == target and failure in ('partial-write', 'interrupt', 'interrupt-twice'):
                         state['data'] = data[:15]
+                        if failure != 'partial-write':
+                            state['mode'] = '644'
+                            raise KeyboardInterrupt()
                         raise OSError('fixture interrupted write')
                     state['data'] = data + b'\n' if data == target and failure == 'mismatch' else data
                     if data == target and failure == 'metadata':
@@ -159,11 +167,17 @@ class RestoreTest(unittest.TestCase):
 
                 device.write.side_effect = write
                 device.set_metadata.side_effect = lambda path, uid, gid, mode, context: state.update(mode=mode)
-                with mock.patch.object(login_state, 'BACKUPS', backups):
+                stderr = io.StringIO()
+                with mock.patch.object(login_state, 'BACKUPS', backups), redirect_stderr(stderr):
                     status = login_state.command_restore(device, str(record), True)
-                self.assertEqual(status, int(failure is not None))
-                self.assertEqual(state['data'], previous if failure else target)
-                self.assertEqual(state['mode'], '600')
+                interrupted = failure in ('interrupt', 'interrupt-twice')
+                self.assertEqual(status, 130 if interrupted else int(failure is not None))
+                if failure == 'interrupt-twice':
+                    self.assertEqual(state['data'], target[:15])
+                    self.assertIn(str(next(backups.iterdir())), stderr.getvalue())
+                else:
+                    self.assertEqual(state['data'], previous if failure else target)
+                    self.assertEqual(state['mode'], '600')
                 self.assertEqual(device.write.call_count, 2 if failure else 1)
                 self.assertEqual((record / 'original.xml').read_bytes(), target)
 

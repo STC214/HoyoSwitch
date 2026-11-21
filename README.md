@@ -2,19 +2,19 @@
 
 在 **已取得 Root 权限的安卓手机** 上运行的米哈游账号切换 App：为同一款游戏保存多个账号状态，需要时一键切换并重新登录。
 
-当前版本 **1.6.3**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
+当前版本 **1.6.4**（应用名「米游账号切换」，正式签名 RSA-4096），支持：
 
 - 崩坏：星穹铁道 4.7.0
 - 原神 7.2.0
 - 绝区零 3.3.0
 
-> 三款游戏均已完成真机双向切换验证（以游戏内 UID 对比确认）。机制结论仅适用于已测设备与版本，游戏大版本更新后可能需要重新差分文件清单。
+> 三款游戏此前已完成真机双向切换验证（以游戏内 UID 对比确认），不是对 1.6.4 的重新真机验收。结论仅适用于已测设备与游戏版本；本版改动及验证边界见[项目进度](docs/PROGRESS.md#发布与待发布状态)。
 
 ## 功能
 
 - 每款游戏独立分栏，按账号去重，一个账号一张快照卡
 - 拍摄快照不打断游戏；切号自动停止游戏 → 写入账号文件 → 校验 → 重新拉起
-- 切换前自动保存安全快照，失败自动回滚；历史版本可回滚
+- 切换前自动保存安全快照，写入或校验报错时尝试回滚；历史版本也可从卡片菜单回滚
 - 快照加密（Android Keystore AES-256-GCM）
 - 卡片可编辑账号/密码备注（密码加密、默认打码、账号与密码可分别复制）
 - 记住上次使用的分栏；悬浮「更新快照」按钮
@@ -22,7 +22,7 @@
 
 ## 发布与安装
 
-GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.3>
+GitHub Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.4>
 
 本地构建（需要 Python、JDK、ADB、Android SDK 36 / Build Tools 36.0.0）：
 
@@ -33,7 +33,7 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 
 - 正式密钥：`app/keystore/hoyoswitch-release.p12` 与 `keystore.txt`（已被 Git 忽略，需随项目保存）
 - 正式证书 SHA-256：`81a5fc64529c23f1eef5a9de9cf32d6f6d71684aaf655c33f0adae36f59f9079`
-- 正式包与调试包签名不同：安装正式包需先卸载旧版，会清空快照及快照加密密钥
+- **同签名正式版升级不需要卸载**：包名和签名一致、版本号允许升级时，用 `adb install -r <APK路径>` 覆盖安装。已安装的是调试包等不同签名版本时，才需要先卸载再换装；卸载会清除快照和快照加密密钥。
 
 ## 当前进度
 
@@ -41,7 +41,7 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 - [x] 原神：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 绝区零：3 文件切换集，双向验证（游戏内 UID 已脱敏，A/B 不同）
 - [x] 账号卡、账号密码、加密存储、历史回滚、悬浮按钮、分栏记忆
-- [x] 正式签名、GitHub Release（1.0.0 → 1.6.3）
+- [x] 正式签名、GitHub Release（1.0.0 → 1.6.4）
 - ○ 最近删除回收站
 - ○ 游戏大版本更新后的兼容性复核
 
@@ -53,7 +53,8 @@ python .\app\build.py --release   # 正式签名 -> app\build\account-switch-rel
 - [App 说明与实现](docs/app/账号切换App原型.md)
 - [项目进度与续接记录](docs/PROGRESS.md)
 - 点位验证：[星铁](docs/research/星铁登录状态点位与验证记录.md) / [原神](docs/research/原神账号状态点位与验证记录.md) / [绝区零](docs/research/绝区零账号状态点位与验证记录.md)
-- [PC 验证工具](docs/tools/账号状态快照.md)
+- PC 验证工具：[账号状态快照](docs/tools/账号状态快照.md) / [登录状态开关](docs/tools/登录状态开关.md)
+- 历史材料：[Android 原型](docs/prototype.md) / [星铁第一轮静态分析](docs/research/星铁账号切换调用链-20261119.md)
 - [工作区规则](AGENTS.md)
 
 ## 目录约定

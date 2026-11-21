@@ -87,18 +87,21 @@ final class SnapshotStore {
         final List<Snapshot> snapshots;
         final Map<String, String> midById;
         final Map<String, Boolean> readableById;
+        final String recoveryError;
 
         RefreshData(Current current, List<Snapshot> snapshots, Map<String, String> midById,
-                    Map<String, Boolean> readableById) {
+                    Map<String, Boolean> readableById, String recoveryError) {
             this.current = current;
             this.snapshots = java.util.Collections.unmodifiableList(snapshots);
             this.midById = java.util.Collections.unmodifiableMap(midById);
             this.readableById = java.util.Collections.unmodifiableMap(readableById);
+            this.recoveryError = recoveryError;
         }
     }
 
-    private static final String MANIFEST = "manifest.json";
-    private static final String HISTORY = ".history";
+    private static final String MANIFEST = SnapshotSwap.MANIFEST;
+    private static final String HISTORY = SnapshotSwap.HISTORY;
+    private static final Pattern HISTORY_SUFFIX = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
     private static final int HISTORY_KEEP = 3;
     private static final int VERSION = 2;
 
@@ -183,10 +186,14 @@ final class SnapshotStore {
     }
 
     private String captureLocked(GameProfile game, String name) throws IOException {
+        return captureLocked(game, name, dirFor(game));
+    }
+
+    private String captureLocked(GameProfile game, String name, File base) throws IOException {
+        requireNoPendingSwitch(game);
         if (!game.supported) {
             throw new IOException(game.label + " 尚未适配，不能拍摄快照");
         }
-        File base = dirFor(game);
         if (!base.isDirectory() && !base.mkdirs()) {
             throw new IOException("无法创建快照目录: " + base);
         }
@@ -488,14 +495,22 @@ final class SnapshotStore {
     /** Worker only: identity, readability and manifest must come from the same snapshot version. */
     RefreshData readRefreshData(GameProfile game, boolean cleanUp) {
         synchronized (LOCK) {
-            if (cleanUp) {
+            String recoveryError = "";
+            try {
+                recoverPendingSwitch(game, message -> Log.i("hoyoswitch", message));
+            } catch (IOException error) {
+                recoveryError = "上次切换未恢复：" + error.getMessage();
+            }
+            if (cleanUp && recoveryError.isEmpty()) {
                 cleanupLocked(game);
             }
-            Current current;
-            try {
-                current = detectCurrentLocked(game);
-            } catch (IOException error) {
-                current = null;
+            Current current = null;
+            if (recoveryError.isEmpty()) {
+                try {
+                    current = detectCurrentLocked(game);
+                } catch (IOException ignored) {
+                    // No confirmed device state to display.
+                }
             }
             boolean needsIdentity = current != null && current.loggedIn && !current.mid.isEmpty();
             List<Snapshot> snapshots = listLocked(game);
@@ -507,7 +522,7 @@ final class SnapshotStore {
                 }
                 readableById.put(snapshot.id, decryptable(snapshot));
             }
-            return new RefreshData(current, snapshots, midById, readableById);
+            return new RefreshData(current, snapshots, midById, readableById, recoveryError);
         }
     }
 
@@ -523,12 +538,16 @@ final class SnapshotStore {
 
     private List<Snapshot> listLocked(GameProfile game) {
         List<Snapshot> snapshots = new ArrayList<>();
-        File[] children = dirFor(game).listFiles();
+        File base = dirFor(game);
+        recoverSwaps(base);
+        File[] children = base.listFiles();
         if (children == null) {
             return snapshots;
         }
         for (File child : children) {
             if (!child.isDirectory() || HISTORY.equals(child.getName())
+                    || SnapshotSwap.STAGING.equals(child.getName())
+                    || SnapshotSwap.recordFor(base, child.getName()).exists()
                     || !new File(child, MANIFEST).isFile()) {
                 continue;
             }
@@ -543,10 +562,14 @@ final class SnapshotStore {
     }
 
     Snapshot load(GameProfile game, String id) throws IOException {
-        try {
-            return readManifest(game, new File(dirFor(game), id));
-        } catch (JSONException error) {
-            throw new IOException("快照清单损坏: " + id, error);
+        synchronized (LOCK) {
+            try {
+                File base = dirFor(game);
+                recoverSwap(base, id);
+                return readManifest(game, new File(base, id));
+            } catch (JSONException error) {
+                throw new IOException("快照清单损坏: " + id, error);
+            }
         }
     }
 
@@ -929,8 +952,10 @@ final class SnapshotStore {
                 throw new IOException("当前账号已变化，未更新该快照");
             }
         }
-        String tempId = captureLocked(game, current.name);
-        File temp = new File(dirFor(game), tempId);
+        File base = dirFor(game);
+        File staging = new File(base, SnapshotSwap.STAGING);
+        String tempId = captureLocked(game, current.name, staging);
+        File temp = new File(staging, tempId);
         boolean published = false;
         try {
             if (expectedMid != null) {
@@ -947,40 +972,55 @@ final class SnapshotStore {
             refreshed.passwordEnc = current.passwordEnc;
             // Finish the replacement manifest while the live snapshot is still untouched.
             saveManifest(refreshed);
-            File archived = moveToArchive(target.dir);
-            if (archived == null) {
-                throw new IOException("无法归档旧快照，已中止更新: " + target.id);
-            }
-            if (!temp.renameTo(target.dir)) {
-                if (!archived.renameTo(target.dir)) {
-                    throw new IOException("更新失败，原版本保留于 " + archived.getName());
-                }
-                throw new IOException("更新失败，已恢复原版本: " + target.id);
-            }
+            File archived = archiveDestination(target.dir);
+            SnapshotSwap.begin(target.dir, temp, archived).publish(SnapshotStore::pruneSwapHistory);
             published = true;
             adopt(target, refreshed);
-            pruneHistory(archived.getParentFile(), target.id, archived);
         } catch (JSONException error) {
             throw new IOException("待更新的快照清单损坏", error);
         } finally {
-            if (!published) {
+            if (!published && !SnapshotSwap.recordFor(base, target.id).exists()) {
                 deleteRecursively(temp);
             }
         }
         return target.id;
     }
 
-    /** Moves a directory without pruning while a replacement is still pending. */
-    private File moveToArchive(File dir) {
+    private File archiveDestination(File dir) throws IOException {
         File history = new File(dir.getParentFile(), HISTORY);
         if (!history.isDirectory() && !history.mkdirs()) {
-            return null;
+            throw new IOException("无法创建历史快照目录: " + history);
         }
-        File destination = new File(history, dir.getName() + "-" + System.currentTimeMillis());
-        if (!dir.renameTo(destination)) {
-            return null;
+        return availableHistoryPath(history, dir.getName(),
+                Long.toString(System.currentTimeMillis()));
+    }
+
+    private static void recoverSwap(File base, String id) throws IOException {
+        File record = SnapshotSwap.recordFor(base, id);
+        if (record.exists()) {
+            SnapshotSwap.recover(record, SnapshotStore::pruneSwapHistory);
         }
-        return destination;
+    }
+
+    private static void pruneSwapHistory(String id, File archive) {
+        pruneHistory(archive.getParentFile(), id, archive);
+    }
+
+    private static boolean recoverSwaps(File base) {
+        File[] records = base.listFiles(SnapshotSwap::isRecord);
+        if (records == null) {
+            return !base.exists();
+        }
+        boolean allRecovered = true;
+        for (File record : records) {
+            try {
+                SnapshotSwap.recover(record, SnapshotStore::pruneSwapHistory);
+            } catch (IOException error) {
+                allRecovered = false;
+                Log.w("hoyoswitch", "快照交换尚未恢复: " + record.getName(), error);
+            }
+        }
+        return allRecovered;
     }
 
     /** Keeps the newest {@code keep} snapshots with the given name, deleting the rest. */
@@ -1010,11 +1050,16 @@ final class SnapshotStore {
 
     private void cleanupLocked(GameProfile game) {
         File base = dirFor(game);
+        if (PendingSwitch.exists(base) || !recoverSwaps(base)) {
+            return; // No housekeeping may remove a directory still referenced by a swap.
+        }
+        deleteRecursively(new File(base, SnapshotSwap.STAGING));
         File[] children = base.listFiles();
         long cutoff = System.currentTimeMillis() - 3 * 60 * 1000L;
         if (children != null) {
             for (File child : children) {
-                if (!child.isDirectory() || HISTORY.equals(child.getName())) {
+                if (!child.isDirectory() || HISTORY.equals(child.getName())
+                        || SnapshotSwap.STAGING.equals(child.getName())) {
                     continue;
                 }
                 if (!new File(child, MANIFEST).isFile() && child.lastModified() < cutoff) {
@@ -1068,12 +1113,8 @@ final class SnapshotStore {
                 }
             }
             primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
-            if (moveToHistory(historyDir, primary, snapshot)) {
-                if (migrateHistory(historyDir, primary, snapshot)) {
-                    deleteForCleanup(snapshot);
-                } else {
-                    Log.w("hoyoswitch", "历史迁移未完成，保留 " + snapshot.id + " 的旧历史");
-                }
+            if (!mergeHistory(historyDir, primary, snapshot)) {
+                Log.w("hoyoswitch", "历史合并未完成，保留 " + snapshot.id + " 待下次重试");
             }
         }
         for (Snapshot primary : keepByAccount.values()) {
@@ -1095,14 +1136,15 @@ final class SnapshotStore {
         return name.equals("切换前自动备份") || name.equals("回滚自检基线");
     }
 
-    private boolean moveToHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
+    static boolean mergeHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
         if (!historyDir.isDirectory() && !historyDir.mkdirs()) {
             return false;
         }
-        File destination = new File(historyDir, primary.id + "-" + duplicate.createdAt);
-        if (destination.exists()) {
-            destination = new File(historyDir, primary.id + "-" + System.currentTimeMillis());
+        // Keep the duplicate card visible and defer pruning until all of its history is moved.
+        if (!migrateHistory(historyDir, primary, duplicate)) {
+            return false;
         }
+        File destination = availableHistoryPath(historyDir, primary.id, Long.toString(duplicate.createdAt));
         if (!duplicate.dir.renameTo(destination)) {
             return false;
         }
@@ -1111,26 +1153,18 @@ final class SnapshotStore {
     }
 
     /** Moves the merged card's own history under the primary id; false if any move failed. */
-    private boolean migrateHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
+    private static boolean migrateHistory(File historyDir, Snapshot primary, Snapshot duplicate) {
         File[] versions = historyDir.listFiles();
         if (versions == null) {
-            return true;
+            return false;
         }
         boolean allMoved = true;
         for (File version : versions) {
-            if (!isHistoryOf(version.getName(), duplicate.id)) {
+            if (!version.isDirectory() || !isHistoryOf(version.getName(), duplicate.id)) {
                 continue;
             }
             String suffix = version.getName().substring(duplicate.id.length() + 1);
-            File target = new File(historyDir, primary.id + "-" + suffix);
-            if (target.exists()) {
-                // Keep the name pure digits so isHistoryOf still recognises it.
-                long timestamp = System.currentTimeMillis();
-                target = new File(historyDir, primary.id + "-" + timestamp);
-                while (target.exists()) {
-                    target = new File(historyDir, primary.id + "-" + (++timestamp));
-                }
-            }
+            File target = availableHistoryPath(historyDir, primary.id, suffix);
             if (!version.renameTo(target)) {
                 allMoved = false;
             }
@@ -1138,51 +1172,77 @@ final class SnapshotStore {
         return allMoved;
     }
 
+    private static File availableHistoryPath(File historyDir, String id, String suffix) {
+        String prefix = id + "-";
+        File target = new File(historyDir, prefix + suffix);
+        String timestamp = historyTimestamp(suffix);
+        long sequence = 1;
+        while (target.exists()) {
+            target = new File(historyDir, prefix + timestamp + "." + sequence++);
+        }
+        return target;
+    }
+
     /** Database paths: the account db ends in .db, mihoyo_account has no extension. */
     private static boolean isDatabase(String relative) {
         return relative.endsWith(".db") || relative.equals("databases/mihoyo_account");
     }
 
-    /** True when {@code name} is exactly {@code id + "-" + digits}; avoids id-prefix collisions. */
+    /** Accepts legacy timestamps and the optional sequence used for a same-time collision. */
     private static boolean isHistoryOf(String name, String id) {
-        if (!name.startsWith(id + "-")) {
-            return false;
+        return name.startsWith(id + "-") && HISTORY_SUFFIX.matcher(name.substring(id.length() + 1)).matches();
+    }
+
+    private static String historyTimestamp(String suffix) {
+        int separator = suffix.indexOf('.');
+        return separator < 0 ? suffix : suffix.substring(0, separator);
+    }
+
+    private static long historyTime(File version, String id) {
+        String suffix = version.getName().substring(id.length() + 1);
+        try {
+            return Long.parseLong(historyTimestamp(suffix));
+        } catch (NumberFormatException error) {
+            return version.lastModified();
         }
-        String suffix = name.substring(id.length() + 1);
-        if (suffix.isEmpty()) {
-            return false;
+    }
+
+    private static long historySequence(File version) {
+        String name = version.getName();
+        int separator = name.lastIndexOf('.');
+        try {
+            return separator < 0 ? 0 : Long.parseLong(name.substring(separator + 1));
+        } catch (NumberFormatException error) {
+            return 0;
         }
-        for (int index = 0; index < suffix.length(); index++) {
-            if (!Character.isDigit(suffix.charAt(index))) {
-                return false;
+    }
+
+    /** The UI and retention policy must agree on which version is newer. */
+    private static List<File> historyVersions(File historyDir, String id) {
+        File[] versions = historyDir.listFiles();
+        List<File> mine = new ArrayList<>();
+        if (versions != null) {
+            for (File version : versions) {
+                if (version.isDirectory() && isHistoryOf(version.getName(), id)) {
+                    mine.add(version);
+                }
             }
         }
-        return true;
+        mine.sort((left, right) -> {
+            int byTime = Long.compare(historyTime(right, id), historyTime(left, id));
+            if (byTime != 0) {
+                return byTime;
+            }
+            int bySequence = Long.compare(historySequence(right), historySequence(left));
+            return bySequence != 0 ? bySequence : right.getName().compareTo(left.getName());
+        });
+        return mine;
     }
 
     /** Keeps the newest versions of one snapshot, always sparing {@code keep}. */
-    private void pruneHistory(File historyDir, String id, File keep) {
-        File[] versions = historyDir.listFiles();
-        if (versions == null) {
-            return;
-        }
-        List<File> mine = new ArrayList<>();
-        boolean keepPresent = false;
-        for (File version : versions) {
-            if (!isHistoryOf(version.getName(), id)) {
-                continue;
-            }
-            if (version.equals(keep)) {
-                keepPresent = true;
-            } else {
-                mine.add(version);
-            }
-        }
-        int allowed = keepPresent ? HISTORY_KEEP - 1 : HISTORY_KEEP;
-        if (mine.size() <= allowed) {
-            return;
-        }
-        mine.sort((left, right) -> Long.compare(right.lastModified(), left.lastModified()));
+    private static void pruneHistory(File historyDir, String id, File keep) {
+        List<File> mine = historyVersions(historyDir, id);
+        int allowed = mine.remove(keep) ? HISTORY_KEEP - 1 : HISTORY_KEEP;
         for (int index = allowed; index < mine.size(); index++) {
             deleteRecursively(mine.get(index));
         }
@@ -1198,28 +1258,14 @@ final class SnapshotStore {
     List<HistoryEntry> history(Snapshot snapshot) {
         List<HistoryEntry> entries = new ArrayList<>();
         File history = new File(snapshot.dir.getParentFile(), HISTORY);
-        File[] versions = history.listFiles();
-        if (versions == null) {
-            return entries;
-        }
-        String prefix = snapshot.id + "-";
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
-        for (File version : versions) {
-            if (!version.isDirectory() || !isHistoryOf(version.getName(), snapshot.id)) {
-                continue;
-            }
+        for (File version : historyVersions(history, snapshot.id)) {
             HistoryEntry entry = new HistoryEntry();
             entry.dir = version;
-            String suffix = version.getName().substring(prefix.length());
-            try {
-                entry.time = Long.parseLong(suffix);
-            } catch (NumberFormatException error) {
-                entry.time = version.lastModified();
-            }
+            entry.time = historyTime(version, snapshot.id);
             entry.label = format.format(new Date(entry.time));
             entries.add(entry);
         }
-        entries.sort((left, right) -> Long.compare(right.time, left.time));
         return entries;
     }
 
@@ -1243,6 +1289,7 @@ final class SnapshotStore {
     /** Reads the manifest from disk so a stale in-memory object cannot overwrite newer data. */
     private Snapshot reload(Snapshot snapshot) throws IOException {
         try {
+            recoverSwap(dirFor(snapshot.game), snapshot.id);
             return readManifest(snapshot.game, snapshot.dir);
         } catch (JSONException error) {
             throw new IOException("快照清单损坏: " + snapshot.id, error);
@@ -1309,6 +1356,8 @@ final class SnapshotStore {
     }
 
     private void deleteLocked(Snapshot snapshot) throws IOException {
+        requireNoPendingSwitch(snapshot.game);
+        recoverSwap(dirFor(snapshot.game), snapshot.id);
         File history = new File(snapshot.dir.getParentFile(), HISTORY);
         File[] versions = history.listFiles();
         if (versions == null && history.exists()) {
@@ -1332,6 +1381,7 @@ final class SnapshotStore {
     }
 
     private void restoreHistoryLocked(Snapshot snapshot, HistoryEntry entry) throws IOException {
+        requireNoPendingSwitch(snapshot.game);
         Snapshot current = reload(snapshot);
         Snapshot candidate;
         try {
@@ -1345,33 +1395,15 @@ final class SnapshotStore {
         } catch (IOException error) {
             throw new IOException("历史版本校验失败，当前版本未改动: " + error.getMessage(), error);
         }
-        File archived = moveToArchive(snapshot.dir);
-        if (archived == null) {
-            throw new IOException("无法归档当前版本，已中止回滚");
-        }
-        if (!entry.dir.renameTo(snapshot.dir)) {
-            if (!archived.renameTo(snapshot.dir)) {
-                throw new IOException("回滚失败，原版本保留于 " + archived.getName());
-            }
-            throw new IOException("无法回滚到该历史版本");
-        }
-        try {
-            candidate.id = snapshot.id;
-            candidate.name = current.name;
-            candidate.lastUsedAt = current.lastUsedAt;
-            candidate.loginName = current.loginName;
-            candidate.passwordEnc = current.passwordEnc;
-            candidate.dir = snapshot.dir;
-            saveManifest(candidate);
-            adopt(snapshot, candidate);
-        } catch (IOException | RuntimeException error) {
-            // Undo the directory swap so a failed save cannot leave a broken current card.
-            if (!snapshot.dir.renameTo(entry.dir) || !archived.renameTo(snapshot.dir)) {
-                throw new IOException("回滚失败，原版本保留于 " + archived.getName(), error);
-            }
-            throw new IOException("回滚失败，已恢复原版本", error);
-        }
-        pruneHistory(archived.getParentFile(), snapshot.id, archived);
+        candidate.id = snapshot.id;
+        candidate.name = current.name;
+        candidate.lastUsedAt = current.lastUsedAt;
+        candidate.loginName = current.loginName;
+        candidate.passwordEnc = current.passwordEnc;
+        saveManifest(candidate, SnapshotSwap.PREPARED_MANIFEST);
+        File archived = archiveDestination(snapshot.dir);
+        SnapshotSwap.begin(snapshot.dir, entry.dir, archived).publish(SnapshotStore::pruneSwapHistory);
+        adopt(snapshot, candidate);
     }
 
     /**
@@ -1571,12 +1603,37 @@ final class SnapshotStore {
         }
     }
 
+    private void requireNoPendingSwitch(GameProfile game) throws IOException {
+        if (PendingSwitch.exists(dirFor(game))) {
+            throw new IOException("上次切换尚未恢复，请先停止游戏后刷新");
+        }
+    }
+
+    private void recoverPendingSwitch(GameProfile game, Progress progress) throws IOException {
+        PendingSwitch.recover(dirFor(game), id -> {
+            if (game.isRunning()) {
+                throw new IOException("请先停止游戏，再刷新以恢复切换前的状态");
+            }
+            Snapshot safety = load(game, id);
+            verifyRestoreSnapshot(safety);
+            restoreAllLocked(safety, progress);
+        });
+    }
+
+    void launchGame(GameProfile game) throws IOException {
+        synchronized (LOCK) {
+            requireNoPendingSwitch(game);
+            game.launch();
+        }
+    }
+
     private void switchToLocked(Snapshot target, boolean launchAfterwards, Progress progress)
             throws IOException {
         GameProfile game = target.game;
         if (game.isRunning()) {
             throw new IOException("游戏正在运行，请先停止游戏再切换");
         }
+        recoverPendingSwitch(game, progress);
         String safetyId = snapshotCurrentAccount(game, progress);
         if (safetyId.equals(target.id)) {
             progress.report("当前已经是这个账号，无需切换");
@@ -1587,6 +1644,8 @@ final class SnapshotStore {
         }
         Snapshot safety = load(game, safetyId);
         verifyRestoreSnapshot(safety);
+        File base = dirFor(game);
+        PendingSwitch.begin(base, safetyId);
         try {
             for (String relative : game.switchFiles) {
                 Entry entry = target.entry(relative);
@@ -1612,25 +1671,26 @@ final class SnapshotStore {
                     throw new IOException("切换后校验失败: " + relative);
                 }
             }
-            progress.report("切换完成，所有文件校验一致");
-            target.lastUsedAt = System.currentTimeMillis();
-            try {
-                Snapshot fresh = reload(target);
-                fresh.lastUsedAt = target.lastUsedAt;
-                saveManifest(fresh);
-                adopt(target, fresh);
-            } catch (IOException ignored) {
-                // The switch already succeeded; a stale timestamp is cosmetic.
-            }
+            PendingSwitch.commit(base);
         } catch (IOException failure) {
             String suffix;
             try {
-                restoreAllLocked(safety, progress);
+                recoverPendingSwitch(game, progress);
                 suffix = "；已回滚到切换前状态";
             } catch (IOException rollbackFailure) {
                 suffix = "；回滚失败: " + rollbackFailure.getMessage();
             }
             throw new IOException(failure.getMessage() + suffix, failure);
+        }
+        progress.report("切换完成，所有文件校验一致");
+        target.lastUsedAt = System.currentTimeMillis();
+        try {
+            Snapshot fresh = reload(target);
+            fresh.lastUsedAt = target.lastUsedAt;
+            saveManifest(fresh);
+            adopt(target, fresh);
+        } catch (IOException ignored) {
+            // The switch already succeeded; a stale timestamp is cosmetic.
         }
         pruneNamed(game, "切换前自动备份", 3);
         if (launchAfterwards) {
@@ -1716,6 +1776,7 @@ final class SnapshotStore {
     /** Restores every present file of {@code snapshot}; used by rollback. */
     void restoreAll(Snapshot snapshot, Progress progress) throws IOException {
         synchronized (LOCK) {
+            requireNoPendingSwitch(snapshot.game);
             verifyRestoreSnapshot(snapshot);
             restoreAllLocked(snapshot, progress);
         }
@@ -1835,6 +1896,10 @@ final class SnapshotStore {
     }
 
     private void saveManifest(Snapshot snapshot) throws IOException {
+        saveManifest(snapshot, MANIFEST);
+    }
+
+    private void saveManifest(Snapshot snapshot, String fileName) throws IOException {
         JSONObject root = new JSONObject();
         try {
             root.put("version", VERSION);
@@ -1870,8 +1935,8 @@ final class SnapshotStore {
         } catch (JSONException error) {
             throw new IOException("生成快照清单失败", error);
         }
-        File manifest = new File(snapshot.dir, MANIFEST);
-        File temp = new File(snapshot.dir, MANIFEST + ".tmp");
+        File manifest = new File(snapshot.dir, fileName);
+        File temp = new File(snapshot.dir, fileName + ".tmp");
         writeLocal(temp, root.toString().getBytes(StandardCharsets.UTF_8));
         if (!temp.renameTo(manifest)) {
             throw new IOException("无法写入快照清单: " + manifest);
