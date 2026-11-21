@@ -11,6 +11,23 @@ ANDROID = '{http://schemas.android.com/apk/res/android}'
 
 
 class ReleaseDocsTest(unittest.TestCase):
+    def test_readme_donation_and_disclaimer_match_app(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        resources = ET.parse(ROOT / 'app' / 'res' / 'values' / 'project_info.xml').getroot()
+        disclaimer = resources.findtext("string[@name='about_disclaimer']")
+        donation = resources.findtext("string[@name='donation_intro']")
+        self.assertTrue(disclaimer)
+        self.assertTrue(donation)
+        lines = readme.splitlines()
+        self.assertEqual(lines[2], '## 捐赠二维码')
+        donate, notice = readme.split('## 免责声明\n', 1)
+        self.assertIn(donation, donate)
+        self.assertIn(f'> {disclaimer}\n', notice)
+        self.assertLess(notice.index(disclaimer), notice.index('在 **已取得 Root 权限的安卓手机**'))
+        for name in ('mm_reward_qrcode_1794446017527.png', '1794446392439.jpg'):
+            self.assertIn(f'src="QRcode/{name}"', donate)
+            self.assertTrue((ROOT / 'QRcode' / name).is_file())
+
     def test_published_version_matches_manifest(self):
         manifest = ET.parse(ROOT / 'app' / 'AndroidManifest.xml').getroot()
         version = manifest.get(f'{ANDROID}versionName')

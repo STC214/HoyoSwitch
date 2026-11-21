@@ -3,6 +3,7 @@ package dev.hoyoswitch.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.Dialog;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -599,7 +600,65 @@ public final class MainActivity extends Activity {
         actions.add(new Action(android.R.drawable.ic_menu_sort_by_size, "切换排序方式",
                 sortMode == SORT_LAST_USED ? "当前按操作时间排序" : "当前使用固定顺序",
                 false, this::toggleSort));
+        actions.add(new Action(android.R.drawable.ic_menu_gallery, "捐赠", "自愿支持项目开发",
+                false, this::showDonationPage));
+        actions.add(new Action(android.R.drawable.ic_menu_info_details, "关于", "项目地址、使用说明与免责声明",
+                false, this::showAboutPage));
         showActionSheet("更多工具", actions);
+    }
+
+    private void showDonationPage() {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("捐赠"), withBottomMargin(matchWrap(), dp(10)));
+        card.addView(dialogMessage(getString(R.string.donation_intro)), matchWrap());
+        addDonationCode(card, "微信赞赏", R.drawable.donation_wechat);
+        addDonationCode(card, "支付宝", R.drawable.donation_alipay);
+        closeInfoPage(dialog, card);
+    }
+
+    private void addDonationCode(LinearLayout card, String label, int imageRes) {
+        card.addView(section(label), matchWrap());
+        ImageView code = new ImageView(this);
+        code.setImageResource(imageRes);
+        code.setAdjustViewBounds(true);
+        int viewportHeight = getResources().getDisplayMetrics().heightPixels;
+        code.setMaxHeight(Math.min(dp(460), viewportHeight * 3 / 4));
+        code.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        code.setContentDescription(label + "捐赠二维码");
+        card.addView(code, matchWrap());
+    }
+
+    private void showAboutPage() {
+        Dialog dialog = baseDialog();
+        LinearLayout card = dialogCard();
+        card.addView(dialogTitle("免责声明"), withBottomMargin(matchWrap(), dp(10)));
+        card.addView(dialogMessage(getString(R.string.about_disclaimer)), matchWrap());
+
+        card.addView(section("关于本项目"), matchWrap());
+        String projectUrl = getString(R.string.project_url);
+        TextView address = dialogMessage(projectUrl);
+        address.setTextIsSelectable(true);
+        card.addView(address, withBottomMargin(matchWrap(), dp(8)));
+        Button open = pill("打开项目主页", false);
+        open.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(projectUrl)));
+            } catch (ActivityNotFoundException | SecurityException error) {
+                toast("打不开项目主页，可长按复制项目地址");
+            }
+        });
+        card.addView(open, matchWrap());
+        card.addView(section("使用说明"), matchWrap());
+        card.addView(dialogMessage(getString(R.string.about_quick_start)), matchWrap());
+        closeInfoPage(dialog, card);
+    }
+
+    private void closeInfoPage(Dialog dialog, LinearLayout card) {
+        Button close = pill("关闭", false);
+        close.setOnClickListener(view -> dialog.dismiss());
+        card.addView(close, withTopMargin(matchWrap(), dp(12)));
+        showDialog(dialog, card);
     }
 
     private void showAppearanceChoices() {

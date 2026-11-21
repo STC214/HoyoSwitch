@@ -6,6 +6,8 @@
 
 ## 发布与待发布状态
 
+- **v1.7.0：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.0)（versionCode 60）。更多工具增加捐赠和关于页；README 置顶两张捐赠二维码，紧接与 App 一致的知识产权声明。
+- **v1.7.0 验证边界：** 51 项 Python 测试、3 项 Java 回归及 Android 资源链接通过；确认二维码与原文件字节一致。真机验证两页和横屏滚动，未扫码、付款或切换游戏账号。
 - **v1.6.6：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.6)（versionCode 59）。「更多工具 → 主题」支持跟随系统、暗色和亮色，并保存选择。
 - **v1.6.6 验证边界：** 50 项 Python 测试、3 项 Java 回归及两套主题资源的编译和链接通过。真机验证了三种主题、系统亮暗变化和重启后保留选择，测试结束后恢复手机原设置。未授予悬浮窗权限或测试游戏账号切换。
 - **v1.6.5：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.5)（versionCode 58）。调整首屏和账号卡片，保留「账号与密码」直达入口，精简状态显示；签名校验通过后统一将本地 APK 放入 `dist/`。

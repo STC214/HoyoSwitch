@@ -17,6 +17,10 @@ RELEASE = HERE / 'keystore'
 RELEASE_KEY = RELEASE / 'hoyoswitch-release.p12'
 RELEASE_PROPS = RELEASE / 'keystore.txt'
 PASSWORD_ENV = 'HOYOSWITCH_RELEASE_STOREPASS'
+DONATION_IMAGES = {
+    'donation_wechat.png': 'mm_reward_qrcode_1794446017527.png',
+    'donation_alipay.jpg': '1794446392439.jpg',
+}
 
 
 def run(*args):
@@ -51,6 +55,11 @@ def publish_apk(signer, candidate, destination, *, release):
     run(*signer, 'verify', '--verbose', *flags, candidate)
     destination.parent.mkdir(parents=True, exist_ok=True)
     candidate.replace(destination)
+
+
+def copy_donation_images(drawable):
+    for output, source in DONATION_IMAGES.items():
+        shutil.copyfile(HERE.parent / 'QRcode' / source, drawable / output)
 
 
 def release_credentials():
@@ -93,6 +102,7 @@ def main():
     drawable.mkdir(parents=True, exist_ok=True)
     icon = HERE.parent / '0i.png'
     shutil.copyfile(icon, drawable / 'app_icon.png')
+    copy_donation_images(drawable)
     flat = OUTPUT / 'res.zip'
     unsigned = OUTPUT / 'unsigned.apk'
     aligned = OUTPUT / 'aligned.apk'
