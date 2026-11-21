@@ -911,9 +911,13 @@ public final class MainActivity extends Activity {
     }
 
     private void refresh() {
-        final GameProfile selected = game;
-        final int generation = ++refreshGeneration;
-        new Thread(() -> {
+        // Capture the target game and generation on the main thread so a refresh kicked off from a
+        // background operation can never read a stale game or claim a newer generation than a tab
+        // switch that just happened.
+        main.post(() -> {
+            final GameProfile selected = game;
+            final int generation = ++refreshGeneration;
+            new Thread(() -> {
             boolean rooted = RootShell.isRooted();
             boolean running;
             String version;
@@ -973,7 +977,8 @@ public final class MainActivity extends Activity {
                     scrollToCard();
                 }
             });
-        }).start();
+            }).start();
+        });
     }
 
     private void renderTabs() {
@@ -1155,8 +1160,11 @@ public final class MainActivity extends Activity {
         // target card (removeAllViews above would otherwise detach it).
         if (cardOpActive && focusedCardId != null) {
             moveLogBelowCard(focusedCardId);
+            // The card may have moved after a reorder; pin the viewport on it, not the old pixel.
+            scrollToView(cardViewFor(focusedCardId));
+        } else {
+            restoreScroll(scroll, savedScrollY);
         }
-        restoreScroll(scroll, savedScrollY);
     }
 
     /** Rebuilding the card list must not yank the page back to the top. */
