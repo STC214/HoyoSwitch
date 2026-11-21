@@ -992,7 +992,7 @@ final class SnapshotStore {
             }
             seen++;
             if (seen > keep) {
-                delete(snapshot);
+                deleteForCleanup(snapshot);
             }
         }
     }
@@ -1070,7 +1070,7 @@ final class SnapshotStore {
             primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
             if (moveToHistory(historyDir, primary, snapshot)) {
                 if (migrateHistory(historyDir, primary, snapshot)) {
-                    delete(snapshot);
+                    deleteForCleanup(snapshot);
                 } else {
                     Log.w("hoyoswitch", "历史迁移未完成，保留 " + snapshot.id + " 的旧历史");
                 }
@@ -1294,25 +1294,34 @@ final class SnapshotStore {
         }
     }
 
-    void delete(Snapshot snapshot) {
+    void delete(Snapshot snapshot) throws IOException {
         synchronized (LOCK) {
             deleteLocked(snapshot);
         }
     }
 
-    private void deleteLocked(Snapshot snapshot) {
-        deleteRecursively(snapshot.dir);
+    private void deleteForCleanup(Snapshot snapshot) {
+        try {
+            delete(snapshot);
+        } catch (IOException error) {
+            Log.w("hoyoswitch", "快照清理未完成: " + snapshot.id, error);
+        }
+    }
+
+    private void deleteLocked(Snapshot snapshot) throws IOException {
         File history = new File(snapshot.dir.getParentFile(), HISTORY);
         File[] versions = history.listFiles();
-        if (versions == null) {
-            return;
+        if (versions == null && history.exists()) {
+            throw new IOException("无法读取快照历史目录，请重试: " + history);
         }
-        String prefix = snapshot.id + "-";
-        for (File version : versions) {
-            if (isHistoryOf(version.getName(), snapshot.id)) {
-                deleteRecursively(version);
+        if (versions != null) {
+            for (File version : versions) {
+                if (isHistoryOf(version.getName(), snapshot.id)) {
+                    deleteChecked(version);
+                }
             }
         }
+        deleteChecked(snapshot.dir);
     }
 
     /** Rolls a snapshot back to one archived version; the current version is archived first. */
@@ -1970,6 +1979,30 @@ final class SnapshotStore {
         try (FileOutputStream output = new FileOutputStream(file)) {
             output.write(data);
             output.getFD().sync();
+        }
+    }
+
+    static void deleteChecked(File file) throws IOException {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children == null) {
+                throw new IOException("无法读取待删除目录，请重试: " + file);
+            }
+            File manifest = null;
+            for (File child : children) {
+                if (MANIFEST.equals(child.getName())) {
+                    manifest = child;
+                } else {
+                    deleteChecked(child);
+                }
+            }
+            // Keep the card discoverable if deleting one of its payloads fails.
+            if (manifest != null) {
+                deleteChecked(manifest);
+            }
+        }
+        if (!file.delete() && file.exists()) {
+            throw new IOException("未能删除快照文件或目录，请重试: " + file);
         }
     }
 

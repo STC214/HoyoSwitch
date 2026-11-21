@@ -44,6 +44,20 @@ class ReadingTest(unittest.TestCase):
 
 
 class RewriteTest(unittest.TestCase):
+    def test_xml_comment_is_neither_counted_nor_rewritten(self):
+        comment = b'<!-- <boolean name="login_status" value="true" /> -->'
+        with self.assertRaises(ValueError):
+            login_status(b'<map>' + comment + b'</map>')
+        live = b"<boolean name='login_status' value = 'true' />"
+        source = b'<map>' + comment + live + b'</map>'
+        self.assertEqual(login_status(source), 'true')
+        self.assertEqual(with_value(source, 'false'),
+                         b'<map>' + comment + live.replace(b'true', b'false') + b'</map>')
+
+    def test_invalid_xml_is_not_treated_as_a_verified_value(self):
+        with self.assertRaises(ValueError):
+            login_status(BASIC.removesuffix(b'</map>\n'))
+
     def test_flip_changes_only_the_boolean(self):
         changed = with_value(BASIC, 'false')
         self.assertEqual(login_status(changed), 'false')
@@ -77,15 +91,17 @@ class SafetyTest(unittest.TestCase):
         device.read.return_value = BASIC
         writes = []
 
-        def flaky_write_checked(_device, _path, data, expected):
+        def flaky_write_checked(_device, _path, data, expected, _info, *, repair_metadata=False):
             writes.append((data, expected))
             if len(writes) == 1:
+                self.assertFalse(repair_metadata)
                 raise RuntimeError('parse failed')
+            self.assertTrue(repair_metadata)
             return []
 
         with mock.patch('login_state.backup', return_value={'sha256_before': 'x'}), \
                 mock.patch('login_state.write_checked', side_effect=flaky_write_checked):
-            code = login_state.apply_change(device, '/data/prefs.xml', b'new', 'true', 'false')
+            code = login_state.apply_change(device, '/data/prefs.xml', BASIC, b'new', 'true', 'false')
         self.assertEqual(code, 1)
         self.assertEqual(writes, [(b'new', 'false'), (BASIC, 'true')])
 
@@ -110,6 +126,47 @@ class BackupTest(unittest.TestCase):
 
 
 class RestoreTest(unittest.TestCase):
+    def test_restore_preserves_previous_content_on_write_or_readback_failure(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        target = BASIC.replace(b'value="true"', b'value="false"')
+        for previous, failure in ((BASIC, 'partial-write'), (BASIC, 'mismatch'), (BASIC, None),
+                                  (b'<map><boolean', 'partial-write'), (b'<map><boolean', None),
+                                  (BASIC, 'metadata')):
+            with self.subTest(previous=previous, failure=failure), tempfile.TemporaryDirectory() as tmp:
+                record = Path(tmp)
+                backups = record / 'backups'
+                (record / 'original.xml').write_bytes(target)
+                meta = dict(source_path=login_state.PORTE_PREFS, sha256_before=login_state.digest(target))
+                (record / 'meta.json').write_text(json.dumps(meta), encoding='utf-8')
+                state = {'data': previous, 'mode': '600'}
+                device = mock.Mock(serial='fixture')
+                device.game_pids.return_value = []
+                device.read.side_effect = lambda path: state['data']
+                device.info.side_effect = lambda path: dict(uid='1', gid='1', mode=state['mode'], context='x',
+                                                           size=len(state['data']), mtime=0)
+
+                def write(path, data):
+                    self.assertEqual(next(backups.glob('*/original.xml')).read_bytes(), previous)
+                    if data == target and failure == 'partial-write':
+                        state['data'] = data[:15]
+                        raise OSError('fixture interrupted write')
+                    state['data'] = data + b'\n' if data == target and failure == 'mismatch' else data
+                    if data == target and failure == 'metadata':
+                        state['mode'] = '644'
+
+                device.write.side_effect = write
+                device.set_metadata.side_effect = lambda path, uid, gid, mode, context: state.update(mode=mode)
+                with mock.patch.object(login_state, 'BACKUPS', backups):
+                    status = login_state.command_restore(device, str(record), True)
+                self.assertEqual(status, int(failure is not None))
+                self.assertEqual(state['data'], previous if failure else target)
+                self.assertEqual(state['mode'], '600')
+                self.assertEqual(device.write.call_count, 2 if failure else 1)
+                self.assertEqual((record / 'original.xml').read_bytes(), target)
+
     def test_restore_rejects_backup_with_changed_bytes(self):
         import json
         import tempfile

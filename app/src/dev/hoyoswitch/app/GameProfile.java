@@ -1,8 +1,8 @@
 package dev.hoyoswitch.app;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /** One supported game. File lists are only filled in for games whose switching was verified. */
@@ -145,12 +145,19 @@ final class GameProfile {
     }
 
     List<String> runningPids() throws IOException {
-        RootShell.Result result = RootShell.run("pidof " + pkg);
+        return parseRunningPids(RootShell.run("pidof " + pkg));
+    }
+
+    static List<String> parseRunningPids(RootShell.Result result) throws IOException {
         String text = result.text();
-        if (text.isEmpty()) {
-            return new ArrayList<>();
+        if (result.code == 1 && text.isEmpty() && result.err.isEmpty()) {
+            return Collections.emptyList();
         }
-        return Arrays.asList(text.split("\\s+"));
+        if (result.code == 0 && text.matches("[1-9][0-9]*(\\s+[1-9][0-9]*)*")) {
+            return Arrays.asList(text.split("\\s+"));
+        }
+        throw new IOException("无法确认游戏进程状态（pidof 退出码 " + result.code + "）"
+                + (result.err.isEmpty() ? "" : ": " + result.err));
     }
 
     boolean isRunning() throws IOException {

@@ -246,6 +246,24 @@ class SidecarIssuesTest(unittest.TestCase):
 
 
 class RestorePayloadTest(unittest.TestCase):
+    def test_missing_metadata_after_write_reports_safety_snapshot(self):
+        relative = snapshot.PREFS[0]
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
+        data = b'backup'
+        entry = dict(path=relative, present=True, sha256=device.digest(data), **metadata)
+        remote = mock.Mock()
+        remote.game_pids.return_value = []
+        remote.info.side_effect = [metadata, metadata, None]
+        remote.read.side_effect = [b'old', b'old', data]
+        stderr = io.StringIO()
+        with mock.patch.object(snapshot, 'load_manifest', return_value={'files': [entry]}), \
+                mock.patch.object(snapshot, 'capture', return_value='safe-copy'), \
+                mock.patch.object(snapshot, 'inspect_local', return_value=([], {relative: data})), \
+                redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            self.assertEqual(snapshot.restore(remote, mock.Mock(), True), 1)
+        self.assertIn('safe-copy', stderr.getvalue())
+        remote.set_metadata.assert_not_called()
+
     def test_restore_writes_the_exact_bytes_it_verified(self):
         rel = 'shared_prefs/fixture.xml'
         path = snapshot.DATA_DIR + '/' + rel
@@ -269,6 +287,26 @@ class RestorePayloadTest(unittest.TestCase):
         local.read_bytes.assert_called_once_with()
         remote.write.assert_called_once_with(path, verified)
         self.assertEqual(state[path], verified)
+
+
+class DeviceProcessTest(unittest.TestCase):
+    def test_pidof_distinguishes_no_match_from_failed_probe(self):
+        import subprocess
+
+        remote = device.Device('fixture')
+        for code, stdout, stderr, expected in ((0, b'123 456\n', b'', '123 456'),
+                                               (1, b'', b'', ''),
+                                               (1, b'', b'adb: device offline', None),
+                                               (0, b'', b'', None),
+                                               (127, b'', b'pidof: not found', None)):
+            with self.subTest(code=code, stdout=stdout, stderr=stderr):
+                result = subprocess.CompletedProcess([], code, stdout, stderr)
+                with mock.patch.object(device.subprocess, 'run', return_value=result):
+                    if expected is None:
+                        with self.assertRaises(RuntimeError):
+                            remote.game_pids()
+                    else:
+                        self.assertEqual(remote.game_pids(), expected)
 
 
 class DeviceCleanupTest(unittest.TestCase):

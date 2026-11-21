@@ -18,6 +18,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.parsers import expat
 
 from device import DATA_DIR, Device, digest
 
@@ -27,32 +28,57 @@ PACKAGE = 'com.miHoYo.hkrpg'
 ROOT = Path(__file__).resolve().parents[2]
 BACKUPS = ROOT / 'account-snapshots' / 'login-state'
 
-VALUE_RE = re.compile(rb'value="(true|false)"')
-STATUS_TAG = re.compile(rb'<boolean\b[^>]*\bname="login_status"[^>]*/>')
+ATTRIBUTE = re.compile(rb"""\s+([^\s=<>/]+)\s*=\s*(["'])(.*?)\2""", re.DOTALL)
+
+
+def find_login_status(data):
+    parser = expat.ParserCreate(namespace_separator='}')
+    stack = []
+    matches = []
+
+    def start(tag, attributes):
+        if stack == ['map'] and tag == 'boolean' and attributes.get('name') == 'login_status':
+            matches.append((attributes.get('value'), parser.CurrentByteIndex))
+        stack.append(tag)
+
+    parser.StartElementHandler = start
+    parser.EndElementHandler = lambda _tag: stack.pop()
+    try:
+        parser.Parse(data, True)
+    except expat.ExpatError as error:
+        raise ValueError(f'invalid preferences XML: {error}') from error
+    if len(matches) != 1:
+        raise ValueError(f'expected exactly one login_status entry, found {len(matches)}')
+    current, offset = matches[0]
+    if current not in ('true', 'false'):
+        raise ValueError('login_status entry does not carry a boolean value')
+    return current, offset
 
 
 def login_status(data):
     """Return the single boolean value of ``login_status`` in a prefs XML file."""
-    matches = STATUS_TAG.findall(data)
-    if len(matches) != 1:
-        raise ValueError(f'expected exactly one login_status entry, found {len(matches)}')
-    values = VALUE_RE.findall(matches[0])
-    if len(values) != 1:
-        raise ValueError('login_status entry does not carry exactly one boolean value')
-    return values[0].decode()
+    return find_login_status(data)[0]
 
 
 def with_value(data, value):
     """Return ``data`` with the login_status value replaced, leaving every other byte alone."""
-    tag = STATUS_TAG.search(data)
-    new_tag = VALUE_RE.sub(b'value="' + value.encode() + b'"', tag.group(0), count=1)
-    if new_tag == tag.group(0):
+    current, offset = find_login_status(data)
+    if value not in ('true', 'false'):
+        raise ValueError('expected a boolean replacement value')
+    if current == value:
         raise ValueError('login_status already has the requested value')
-    candidate = data[:tag.start()] + new_tag + data[tag.end():]
-    # Prove that nothing outside the tag changed.
-    if candidate.replace(new_tag, tag.group(0), 1) != data:
-        raise ValueError('refusing to write: change escaped the login_status entry')
-    return candidate
+    if not data.startswith(b'<boolean', offset):
+        raise ValueError('login_status is not in a byte-compatible XML encoding')
+    offset += len(b'<boolean')
+    while attribute := ATTRIBUTE.match(data, offset):
+        if attribute[1] == b'value' and attribute[3] == current.encode('ascii'):
+            start, end = attribute.span(3)
+            candidate = data[:start] + value.encode('ascii') + data[end:]
+            if login_status(candidate) == value:
+                return candidate
+            break
+        offset = attribute.end()
+    raise ValueError('could not locate literal login_status value without changing other bytes')
 
 
 def probe(device, path):
@@ -106,15 +132,17 @@ def stable(info):
     return {key: info[key] for key in ('uid', 'gid', 'mode', 'context')}
 
 
-def write_checked(device, path, data, expected_value):
-    info_before = probe(device, path)
+def write_checked(device, path, data, expected_value, info_before, *, repair_metadata=False):
     device.write(path, data)
     actual = device.read(path)
     info_after = probe(device, path)
+    if repair_metadata and stable(info_after) != stable(info_before):
+        device.set_metadata(path, **stable(info_before))
+        info_after = probe(device, path)
     problems = []
     if actual != data:
         problems.append('device bytes differ from what was written')
-    if login_status(actual) != expected_value:
+    if expected_value is not None and login_status(actual) != expected_value:
         problems.append('device login_status does not match the requested value')
     if stable(info_after) != stable(info_before):
         problems.append(f'owner/mode/context changed: {stable(info_before)} -> {stable(info_after)}')
@@ -123,14 +151,15 @@ def write_checked(device, path, data, expected_value):
     return problems
 
 
-def apply_change(device, path, data, before_value, after_value):
-    record = BACKUPS / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}-{before_value}-to-{after_value}'
-    original = device.read(path)
+def apply_change(device, path, original, data, before_value, after_value):
+    info_before = probe(device, path)
+    previous = before_value if before_value is not None else 'unparsed'
+    record = BACKUPS / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}-{previous}-to-{after_value}'
     meta = backup(record, path, original, before_value, after_value, device)
     print(f'backup={record}')
     print(f'sha256_before={meta["sha256_before"]}')
     try:
-        problems = write_checked(device, path, data, after_value)
+        problems = write_checked(device, path, data, after_value, info_before)
     except Exception as error:  # noqa: BLE001 - any failure must still roll back
         print(f'write verification raised: {error}', file=sys.stderr)
         problems = [f'write verification raised: {error}']
@@ -139,7 +168,8 @@ def apply_change(device, path, data, before_value, after_value):
         for line in problems:
             print(f'  - {line}', file=sys.stderr)
         try:
-            restore_problems = write_checked(device, path, original, before_value)
+            restore_problems = write_checked(device, path, original, before_value, info_before,
+                                             repair_metadata=True)
         except Exception as error:  # noqa: BLE001 - report instead of crashing silently
             print(f'restore raised: {error}', file=sys.stderr)
             return 1
@@ -149,7 +179,7 @@ def apply_change(device, path, data, before_value, after_value):
             return 1
         print('backup restored and verified; device is back at the original state')
         return 1
-    print(f'login_status {before_value} -> {after_value} verified by read-back')
+    print(f'login_status {previous} -> {after_value} verified by read-back')
     print(f'sha256_after={digest(data)}')
     return 0
 
@@ -169,7 +199,7 @@ def command_set(device, target, apply):
     if not apply:
         print('dry run; add --apply to write')
         return 0
-    return apply_change(device, PORTE_PREFS, data, current, target)
+    return apply_change(device, PORTE_PREFS, original, data, current, target)
 
 
 def command_restore(device, record_dir, apply):
@@ -187,18 +217,19 @@ def command_restore(device, record_dir, apply):
     if device.game_pids():
         print(f'{PACKAGE} is running; stop it before writing', file=sys.stderr)
         return 1
-    current = login_status(device.read(PORTE_PREFS))
-    print(f'restoring record {record.name}: login_status {current} -> {expected}')
+    previous = device.read(PORTE_PREFS)
+    try:
+        current = login_status(previous)
+    except ValueError:
+        current = None  # A valid backup must also be able to repair a damaged device file.
+    print(f'restoring record {record.name}: login_status {current or "unparsed"} -> {expected}')
     if not apply:
         print('dry run; add --apply to restore')
         return 0
-    problems = write_checked(device, PORTE_PREFS, original, expected)
-    if problems:
-        for line in problems:
-            print(f'  - {line}', file=sys.stderr)
-        return 1
-    print(f'restored from {meta["sha256_before"]}; read-back verified')
-    return 0
+    result = apply_change(device, PORTE_PREFS, previous, original, current, expected)
+    if result == 0:
+        print(f'restored from {meta["sha256_before"]}; read-back verified')
+    return result
 
 
 def main():

@@ -6,6 +6,7 @@ owner, mode and SELinux context of game files survive.
 """
 
 import hashlib
+import re
 import os
 import shlex
 import subprocess
@@ -47,7 +48,15 @@ class Device:
         return self.root(script, ok=ok).decode('utf-8', errors='replace').strip()
 
     def game_pids(self):
-        return self.shell('pidof', PACKAGE, ok=(0, 1))
+        result = self._run(['shell', 'pidof', PACKAGE], ok=(0, 1))
+        text = result.stdout.decode('utf-8', errors='replace').strip()
+        error = result.stderr.decode('utf-8', errors='replace').strip()
+        if result.returncode == 1 and not text and not error:
+            return ''
+        if result.returncode == 0 and re.fullmatch(r'[1-9][0-9]*(\s+[1-9][0-9]*)*', text):
+            return text
+        raise RuntimeError(f'{self.serial}: could not confirm game process status (pidof exit '
+                           f'{result.returncode}): {error or text or "no valid PID output"}')
 
     def info(self, path):
         """Metadata for one remote path, or None when it does not exist."""

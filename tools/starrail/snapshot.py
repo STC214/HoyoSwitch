@@ -47,6 +47,8 @@ def local_path(record, rel):
 
 
 def stable(info):
+    if info is None:
+        return None
     return {key: info[key] for key in ('uid', 'gid', 'mode', 'context')}
 
 
@@ -297,6 +299,9 @@ def restore(device, record, apply, only=()):
         device.write(path, data)
         written += 1
         after_info = device.info(path)
+        if after_info is None:
+            print(f'{rel}: missing after write; safety snapshot {safety}', file=sys.stderr)
+            return 1
         after = device.read(path)
         if digest(after) != entry['sha256']:
             print(f'{rel}: read-back does not match the snapshot; safety snapshot {safety}', file=sys.stderr)

@@ -4,7 +4,7 @@
 
 **交接入口**：当前实现与后续安排见 [README](../README.md) 和 [App 说明](app/账号切换App原型.md)；各游戏点位报告保留对应版本的实测证据，下方各轮记录按发生时间保留。
 
-## 当前状态（2026-11-20）
+## 2026-11-20 状态归档
 
 - App **1.4.6**，`versionCode 44`，本轮代码复核基于 `536992c`；本轮未发现新的可确认问题。
 - 上轮两组离线回退样本复验通过：空表加删除残留不识别为有效账号；有效 B 加较新的删除残留 A、且仅 B 有 token 时，设备与快照均识别为 B。
@@ -271,39 +271,39 @@
 
 - 补充（23:22–23:35）：文档总更新与脱敏，并发布 1.0.0 Release。README 重写为最终状态（三款游戏、构建/安装、Release 链接、密钥位置与签名迁移代价）；App 说明文档更新到 1.0.0（三款游戏验证表、已知限制、发布记录）；需求文档加实现状态说明；早期 prototype 文档标注「已被正式 App 取代」；两份 tools 文档与星铁研究文档补「已在 App 落地」说明；原神/绝区零点位记录更新为最终结构并脱敏。文中账号 mid、aid、游戏 UID、设备型号统一替换为 <mid-A>、<aid-A>、UID-A/UID-B、Xiaomi（型号已脱敏）。GitHub Release v1.0.0 已创建并上传 HoyoSwitch-1.0.0.apk。
 
-- 补充（23:25–23:40）：按审查报告修复 8 项 P1 与 2 项 P2，发布 1.1.0，应用名改为「米游账号切换」。P1：① 带名称重复拍摄时先更新内存对象再 rename，清单不再写回旧哈希；② rchive() 返回空时中止更新，不再删原快照；③ 读取用 [ -e ] && cat，退出码 3 才算缺失，其他失败抛错；④ estoreAll 删除快照中 present=false 的多余文件；⑤ SnapshotCrypto.key() 加锁并缓存，避免并行拍摄重复建钥；⑥ 快照写操作统一走进程级 SnapshotStore.LOCK；⑦ 发布包忽略 selftest 附加参数；⑧ --release 生成 debuggable=false 的清单。P2：login_state.py 补 PACKAGE、校验异常也回滚，并新增 2 个回归测试（22 个全部通过）。真机验证：CARDOPS PASS、SELFTEST PASS；带名称拍摄后清单 sha256 与设备文件一致。
+- 补充（23:25–23:40）：按审查报告修复 8 项 P1 与 2 项 P2，发布 1.1.0，应用名改为「米游账号切换」。P1：① 带名称重复拍摄时先更新内存对象再 rename，清单不再写回旧哈希；② `archive()` 返回空时中止更新，不再删原快照；③ 读取用 [ -e ] && cat，退出码 3 才算缺失，其他失败抛错；④ `restoreAll` 删除快照中 present=false 的多余文件；⑤ SnapshotCrypto.key() 加锁并缓存，避免并行拍摄重复建钥；⑥ 快照写操作统一走进程级 SnapshotStore.LOCK；⑦ 发布包忽略 selftest 附加参数；⑧ --release 生成 debuggable=false 的清单。P2：login_state.py 补 PACKAGE、校验异常也回滚，并新增 2 个回归测试（22 个全部通过）。真机验证：CARDOPS PASS、SELFTEST PASS；带名称拍摄后清单 sha256 与设备文件一致。
 
-- 补充（23:36–23:40）：正式包真机覆盖验证（用户已卸载旧版）。安装 ccount-switch-release.apk 后：版本 1.1.0、名称「米游账号切换」；un-as 报 package not debuggable；带 --es selftest cardops 启动不产生任何自检日志与快照（发布包忽略自检参数）；星铁分栏拍摄成功（846ms，10/10），卡片显示当前登录，载荷为 HSN1 加密文件。数据已随卸载清空，需重新登录各游戏拍摄。
+- 补充（23:36–23:40）：正式包真机覆盖验证（用户已卸载旧版）。安装 `account-switch-release.apk` 后：版本 1.1.0、名称「米游账号切换」；`run-as` 报 package not debuggable；带 --es selftest cardops 启动不产生任何自检日志与快照（发布包忽略自检参数）；星铁分栏拍摄成功（846ms，10/10），卡片显示当前登录，载荷为 HSN1 加密文件。数据已随卸载清空，需重新登录各游戏拍摄。
 
-- 补充（23:39–23:44）：复核 1.1.0 审查修复时发现三处同类残留，发布 1.1.1。① eadDevice 改为 [ -e ] && cat：退出码 3 才是缺失，其他读取失败抛错（原先把权限/IO 错误当空内容）；② estoreHistory 纳入进程级 LOCK，rchive() 失败时中止回滚；③ 回滚后同步 snapshot.entries，避免之后重命名写回旧哈希。验证：调试包 CARDOPS PASS；正式包 1.1.1 安装后 un-as 被拒、拍摄 833ms 成功。
+- 补充（23:39–23:44）：复核 1.1.0 审查修复时发现三处同类残留，发布 1.1.1。① `readDevice` 改为 [ -e ] && cat：退出码 3 才是缺失，其他读取失败抛错（原先把权限/IO 错误当空内容）；② `restoreHistory` 纳入进程级 LOCK，`archive()` 失败时中止回滚；③ 回滚后同步 snapshot.entries，避免之后重命名写回旧哈希。验证：调试包 CARDOPS PASS；正式包 1.1.1 安装后 `run-as` 被拒、拍摄 833ms 成功。
 
-- 补充（23:47–00:00）：按第二轮审查修复 12 项，发布 1.2.0。P1：① 新增 updateCurrentAccount/updateAccountIfCurrent，识别与更新同锁；② ename/setCredentials/切换收尾改为磁盘重读后再写，旧对象不再覆盖新哈希；③ stableRead 持续不一致时抛错，不再保存混合状态；④ 账号库改用 SQLite 查询最新行（临时库文件 + 只读打开），删除残留不会被误判；⑤ 切换时同步 DB 的 journal/WAL/SHM，目标没有就删除；⑥ 必要文件缺失直接拒绝切换。P2：⑦ 回滚删除检查退出码并确认消失；⑧ 加密载荷长度校验；⑨ RootShell stdin 写入移到线程，超时覆盖写；⑩ 内容一致也恢复属主/权限/上下文；⑪ login_state.py 恢复命令参数顺序；⑫ uild.py 先清空 uild/res。单测 23 个通过。注：重装正式包后 Root 授权丢失，真机验证待用户重新授权。
+- 补充（23:47–00:00）：按第二轮审查修复 12 项，发布 1.2.0。P1：① 新增 updateCurrentAccount/updateAccountIfCurrent，识别与更新同锁；② `rename/setCredentials`/切换收尾改为磁盘重读后再写，旧对象不再覆盖新哈希；③ stableRead 持续不一致时抛错，不再保存混合状态；④ 账号库改用 SQLite 查询最新行（临时库文件 + 只读打开），删除残留不会被误判；⑤ 切换时同步 DB 的 journal/WAL/SHM，目标没有就删除；⑥ 必要文件缺失直接拒绝切换。P2：⑦ 回滚删除检查退出码并确认消失；⑧ 加密载荷长度校验；⑨ RootShell stdin 写入移到线程，超时覆盖写；⑩ 内容一致也恢复属主/权限/上下文；⑪ login_state.py 恢复命令参数顺序；⑫ `build.py` 先清空 `build/res`。单测 23 个通过。注：重装正式包后 Root 授权丢失，真机验证待用户重新授权。
 
 - 补充（23:56–00:00）：正式包 1.2.0 真机验证（签名 81a5fc64…，Root 正常）。星铁拍摄 845ms；绝区零分栏识别为「已登录，但不在任何快照中」（SQLite 查询生效）；绝区零连续拍摄两次（793/818ms，同卡更新并生成历史）；历史版本回滚成功——恢复旧清单 createdAt=1795103838946，当前版本归档为 .history/20261119-235718-1795103930837（createdAt=1795103847389）。
 
 - 补充（00:05–00:20）：按第三轮审查修复 10 项，发布 1.3.0。P1：① SQLite 查询成功但空表时返回空，不再回退正则（避免误读删除残留）；② 采集加入 DB 的 -wal/-shm，目标无 WAL 而设备有则拒绝切换；③ 运行中拍摄前后比对账号 mid，变化则整组作废（游戏停止时跳过以保持约 0.9 秒）。P2：④ Device.info() 用 exit 3 表示不存在，权限错误抛错；⑤ PC 恢复先检查残留边车再判断「已匹配」；⑥ chcon 失败抛错，最终校验含 context；⑦ 历史目录用 <id>-<纯数字> 匹配，避免 id 前缀串卡；⑧ 回滚先验证历史清单，保存失败撤回目录交换；⑨ 自检要求注入触发+有写入+报告回滚+字节一致；⑩ 悬浮服务从偏好恢复游戏。验证：单测 23 通过；1.3.0 正式包覆盖安装后 Root 保留，停止状态拍摄 901ms、10/12 文件。
 
-- 补充（00:25–00:40）：按第四轮审查修复 10 项，发布 1.4.0。P1：① updateSnapshotLocked(target, expectedMid) 把待更新账号 mid 绑定进采集前后校验，防「切到 B 后把 B 写进 A 卡」；② 账号库主文件与 journal/WAL/SHM 单命令连读、运行中稳定重读，规避 checkpoint 竞态；③ SQLite 空表即「未登录」，不再回退 token 键。P2：④ PC 边车校验覆盖 mihoyo_account、--only 未选 WAL、erify --remote；⑤ Device.info() 解析失败抛错；⑥ 悬浮服务独立 loating_game 偏好；⑦ 去重合并迁移被合并卡历史；⑧ command_restore 校验备份哈希；⑨ Activity 销毁后不弹切换框；⑩ 复制账号改布尔标记。验证：单测 24 通过；1.4.0 正式包覆盖安装 Root 保留，绝区零拍摄 1441ms、清单 12 项（journal 存在、WAL/SHM 缺失）。
+- 补充（00:25–00:40）：按第四轮审查修复 10 项，发布 1.4.0。P1：① updateSnapshotLocked(target, expectedMid) 把待更新账号 mid 绑定进采集前后校验，防「切到 B 后把 B 写进 A 卡」；② 账号库主文件与 journal/WAL/SHM 单命令连读、运行中稳定重读，规避 checkpoint 竞态；③ SQLite 空表即「未登录」，不再回退 token 键。P2：④ PC 边车校验覆盖 mihoyo_account、--only 未选 WAL、`verify --remote`；⑤ Device.info() 解析失败抛错；⑥ 悬浮服务独立 `floating_game` 偏好；⑦ 去重合并迁移被合并卡历史；⑧ command_restore 校验备份哈希；⑨ Activity 销毁后不弹切换框；⑩ 复制账号改布尔标记。验证：单测 24 通过；1.4.0 正式包覆盖安装 Root 保留，绝区零拍摄 1441ms、清单 12 项（journal 存在、WAL/SHM 缺失）。
 
-- 补充（00:43–00:50）：按第五轮审查修复 5 项，发布 1.4.1。P1：① 数据库连读命令改为 =0 … cat || f=1 … exit \，中途读取失败不再被吞；② 分组采集不再依赖 ccountDb，所有 .db 与 mihoyo_account 均与边车连读（星铁主库纳入）。P2：③ 历史迁移重名时用纯数字时间戳，isHistoryOf 仍识别；④ PC 恢复先拒绝边车冲突再写入，避免「新主库+旧 WAL」；⑤ 分组读取加显式存在标志，零字节存在文件不再当缺失。验证：单测 26 通过；1.4.1 正式包覆盖安装 Root 保留，星铁拍摄 2017ms、清单 12 项（PORTE db+journal 存在、WAL/SHM 缺失、mihoyo_account 已分组）。
+- 补充（00:43–00:50）：按第五轮审查修复 5 项，发布 1.4.1。P1：① 数据库连读命令改为 `f=0 … cat || f=1 … exit $f`，中途读取失败不再被吞；② 分组采集不再依赖 `accountDb`，所有 .db 与 mihoyo_account 均与边车连读（星铁主库纳入）。P2：③ 历史迁移重名时用纯数字时间戳，isHistoryOf 仍识别；④ PC 恢复先拒绝边车冲突再写入，避免「新主库+旧 WAL」；⑤ 分组读取加显式存在标志，零字节存在文件不再当缺失。验证：单测 26 通过；1.4.1 正式包覆盖安装 Root 保留，星铁拍摄 2017ms、清单 12 项（PORTE db+journal 存在、WAL/SHM 缺失、mihoyo_account 已分组）。
 
-- 补充（00:50–01:00）：按第六轮审查修复 3 项并修复真机发现的 UTF-16 账号库问题，发布 1.4.2。① PC 边车预检跳过「已纳入恢复范围」的边车，完整恢复不再误拦截本应恢复的 journal（新增 2 个测试）；② migrateHistory 返回布尔，迁移失败不再 delete 旧历史；③ 分组协议改长度前缀帧，二进制含分隔符不再截断。真机验证 #3 时发现：账号库是 UTF-16 编码，Android SQLite 读不了（一直报 READONLY_ROLLBACK / no such table），egexMid 增加 UTF-16LE/BE 解码，SQLite 失败时按编码扫描恢复账号识别；验证绝区零识别为具体卡片而非 token 回退。
+- 补充（00:50–01:00）：按第六轮审查修复 3 项并修复真机发现的 UTF-16 账号库问题，发布 1.4.2。① PC 边车预检跳过「已纳入恢复范围」的边车，完整恢复不再误拦截本应恢复的 journal（新增 2 个测试）；② migrateHistory 返回布尔，迁移失败不再 delete 旧历史；③ 分组协议改长度前缀帧，二进制含分隔符不再截断。真机验证 #3 时发现：账号库是 UTF-16 编码，Android SQLite 读不了（一直报 READONLY_ROLLBACK / no such table），`regexMid` 增加 UTF-16LE/BE 解码，SQLite 失败时按编码扫描恢复账号识别；验证绝区零识别为具体卡片而非 token 回退。
 
 - 补充（01:04–01:10）：按第七轮审查修复 3 项，发布 1.4.3。① 分组分帧去掉 stat -c %s 后多余的 printf '\\n'，内容不再错位；② PC sidecar_issues 只跳过「在恢复范围且 present」的边车，present=false 的旧边车仍检测（新增测试）；③ UTF-16 编码判定改用 SQLite 头 56–59 的 text-encoding 字段，BOM 仅回退。验证：单测 29 通过；绝区零拍摄后快照 DB sha256 与设备一致（20480 字节），分帧无错位。
 
-- 补充（01:10–01:25）：按第八轮审查修复 #2/#3，发布 1.4.4。#2 egexMid 改字节级扫描（不再整文件按偶对齐解码），奇数偏移账号可识别；#3 分组命令传播 stat 失败、分帧解析失败/截断抛错不再当缺失。#1 有残余：账号库是非标准 UTF-16 SQLite（UTF-16 魔数头），Android/Python SQLite 均打不开，无法读有效行区分删除残留；现仍以最新时间戳字节扫描回退，库清空但有删除残留时可能误判，彻底修复需内嵌 UTF-16 支持或自写 b-tree 遍历。验证：单测 29 通过；绝区零识别正常无回归。
+- 补充（01:10–01:25）：按第八轮审查修复 #2/#3，发布 1.4.4。#2 `regexMid` 改字节级扫描（不再整文件按偶对齐解码），奇数偏移账号可识别；#3 分组命令传播 stat 失败、分帧解析失败/截断抛错不再当缺失。#1 有残余：账号库是非标准 UTF-16 SQLite（UTF-16 魔数头），Android/Python SQLite 均打不开，无法读有效行区分删除残留；现仍以最新时间戳字节扫描回退，库清空但有删除残留时可能误判，彻底修复需内嵌 UTF-16 支持或自写 b-tree 遍历。验证：单测 29 通过；绝区零识别正常无回归。
 
 - 补充（01:20–01:30）：#1 采用工作量小的缓解方案，发布 1.4.5。DB 识别结果要求活动 token 佐证：删除账号无 token，字节扫描出的删除残留不再误判为当前；修正 token 键名（\<mid>_porte_cookie_token_key\，mid 已含 \_mhy\）与 \	okenMid\（返回完整 mid）。真机验证绝区零识别正常无回归，单测 29 通过。彻底区分删除残留与活动行仍需 UTF-16 SQLite 读取器，已记录为已知限制。
 
-- 补充（01:30–01:40）：修复第九轮 P1/P2，发布 1.4.6。字节扫描改返回按时间戳降序候选列表；设备识别与快照识别均改为遍历候选选第一个有 token 的（\hasLiveToken\/\hasSnapshotToken\），删除残留即使时间戳更大也不选中；\eadAccountMid\ 接入 token 交叉校验，去重/匹配不再把已删除账号当有效。真机验证绝区零识别正常无回归，单测 29 通过。
+- 补充（01:30–01:40）：修复第九轮 P1/P2，发布 1.4.6。字节扫描改返回按时间戳降序候选列表；设备识别与快照识别均改为遍历候选选第一个有 token 的（`hasLiveToken`/`hasSnapshotToken`），删除残留即使时间戳更大也不选中；`readAccountMid` 接入 token 交叉校验，去重/匹配不再把已删除账号当有效。真机验证绝区零识别正常无回归，单测 29 通过。
 
 - 补充（12:28–12:40）：卡片/日志交互重构，发布 1.5.0。① 切号后自动滚动到当前登录卡片；② hero 文案（切号轻一点+副标题）移入滚动区随内容滚动，横屏重排同步修正；③ 卡片操作时日志移到当前卡片下方并锁定滚动，结束后动效回到底部解锁；④ 操作时一屏内上卡片下日志；⑤ 固定排序模式下卡片 ↑↓ 手动调序并持久化；⑥ 排序默认按最后操作时间、可选固定顺序（持久化）；⑦ 排序/位置不影响操作聚焦。真机验证通过。
 
-- 补充（13:00–13:10）：修复 1.5.0 交互 7 项，发布 1.5.1。① 日志回位改用 \logHome\（竖屏 content / 横屏右列），横屏操作后日志不再消失；② 切分栏重新加载固定顺序；③ \ocusCard\ 滚动到目标卡；④ \ensureFixedOrder\ 清理删除 ID；⑤ \ctivityTime\ 取 max(lastUsedAt, createdAt)；⑥ \seedFixedOrder\ 按操作时间降序；⑦ 启动同步排序按钮文案。真机验证重启后固定模式按钮文案正确。
+- 补充（13:00–13:10）：修复 1.5.0 交互 7 项，发布 1.5.1。① 日志回位改用 `logHome`（竖屏 content / 横屏右列），横屏操作后日志不再消失；② 切分栏重新加载固定顺序；③ `focusCard` 滚动到目标卡；④ `ensureFixedOrder` 清理删除 ID；⑤ `activityTime` 取 max(lastUsedAt, createdAt)；⑥ `seedFixedOrder` 按操作时间降序；⑦ 启动同步排序按钮文案。真机验证重启后固定模式按钮文案正确。
 
 - 补充（13:00–13:20）：修复 1.5.1 复审 3 项，发布 1.5.2。① 固定顺序排序/维护移到主线程 main.post（受 generation 守卫），迟到后台刷新不再覆盖新分栏顺序；② restoreLogToBottom 空父容器空判，刷新重建列表后聚焦态重新插回日志，避免 NPE；③ 横屏左右 ScrollView 也挂滚动拦截。真机验证基本 UI 正常。
 
-- 补充（13:10–13:20）：修复 1.5.2 复审 2 项，发布 1.5.3。① \efresh()\ 的目标游戏与刷新序号改在主线程捕获（\main.post\ 包裹），后台操作触发的刷新不再用旧游戏/迟到序号覆盖新分栏卡片列表与固定顺序；② 聚焦期间重排后视口按目标卡 ID 重新定位，不再恢复重排前像素位置。真机验证基本 UI 正常。
+- 补充（13:10–13:20）：修复 1.5.2 复审 2 项，发布 1.5.3。① `refresh()` 的目标游戏与刷新序号改在主线程捕获（`main.post` 包裹），后台操作触发的刷新不再用旧游戏/迟到序号覆盖新分栏卡片列表与固定顺序；② 聚焦期间重排后视口按目标卡 ID 重新定位，不再恢复重排前像素位置。真机验证基本 UI 正常。
 
 - 补充（13:40–13:50）：修复分栏切换竞态，发布 1.5.4。结果回调在校验刷新序号之外，同时校验「结果所属分栏 == 当前分栏」（\selected != game\ 即丢弃），消除旧刷新覆盖新手动排序的窗口；\game\/\selected\ 均指向静态单例，引用比较可靠。真机验证基本 UI 正常。
 
@@ -311,8 +311,8 @@
 
 - 补充（13:52–14:00）：修复首次切「固定顺序」可能卡主线程，发布 1.5.6。\	oggleSort\ 不再在点击回调里 \store.list()\，固定顺序改由刷新结果阶段用已读取的 \listed\ 初始化（\seedFixedOrderFrom\，按操作时间降序），且在「刷新序号+分栏」双重校验之后，既避免阻塞主线程又不会写错分栏。
 
-- 补充（14:00–14:10）：刷新路径 I/O 移出主线程，发布 1.5.7。后台线程预计算每张卡 \ccountMid\ 与 \decryptable\（\midById\/\eadableById\）随清单传回；主线程 \match()\ 与 \enderCards()\ 只消费预计算结果，不再逐卡调用 \store.accountMid\/\store.decryptable\；后台切换确认路径保留按需计算（二参重载）。真机验证状态正常。
+- 补充（14:00–14:10）：刷新路径 I/O 移出主线程，发布 1.5.7。后台线程预计算每张卡 `accountMid` 与 `decryptable`（`midById`/`readableById`）随清单传回；主线程 `match()` 与 `renderCards()` 只消费预计算结果，不再逐卡调用 `store.accountMid`/`store.decryptable`；后台切换确认路径保留按需计算（二参重载）。真机验证状态正常。
 
-- 补充（14:20–14:30）：刷新链路与 PC 工具重构，发布 1.6.0。新增 \SnapshotStore.RefreshData\ 与 \eadRefreshData()\ 统一后台读取；\MainActivity\ 用 \displayedData\/\efreshInFlight\/\pageResumed\ 管理刷新生命周期；\FloatingService\ 增加快照观察者，悬浮更新后自动刷新对应分栏；PC 工具 \device.py\ 写入改临时文件+push+清理、\sidecar_issues\ 增 \pending_writes\。单测 33 通过，真机基本 UI 正常。
+- 补充（14:20–14:30）：刷新链路与 PC 工具重构，发布 1.6.0。新增 `SnapshotStore.RefreshData` 与 `readRefreshData()` 统一后台读取；`MainActivity` 用 `displayedData`/`refreshInFlight`/`pageResumed` 管理刷新生命周期；`FloatingService` 增加快照观察者，悬浮更新后自动刷新对应分栏；PC 工具 `device.py` 写入改临时文件+push+清理、`sidecar_issues` 增 `pending_writes`。单测 33 通过，真机基本 UI 正常。
 
-- 补充（14:50–15:00）：加固（用户修复），发布 1.6.1。\GameProfile.launch()\ 校验 \m start -W\ 的 Status:ok；\SnapshotStore\ 回滚前整组校验、属主/权限元数据校验、DB 分帧解析更严格；PC 工具 \snapshot.py\ 的 \inspect_local\ 保留恢复字节并校验本地副本。单测 34 通过。
+- 补充（14:50–15:00）：加固（用户修复），发布 1.6.1。`GameProfile.launch()` 校验 `am start -W` 的 Status:ok；`SnapshotStore` 回滚前整组校验、属主/权限元数据校验、DB 分帧解析更严格；PC 工具 `snapshot.py` 的 `inspect_local` 保留恢复字节并校验本地副本。单测 34 通过。

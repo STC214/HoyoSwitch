@@ -17,7 +17,7 @@ class Fixture:
         self.serial = serial
         self.trace = []
 
-    def adb(self, *args, ok=(0,)):
+    def adb_result(self, *args, ok=(0,)):
         command = ['adb', '-s', self.serial, *args]
         result = subprocess.run(command, capture_output=True, timeout=45)
         stdout = result.stdout.decode('utf-8', errors='replace').strip()
@@ -25,7 +25,10 @@ class Fixture:
         self.trace.append(dict(command=command, exit_code=result.returncode, stdout=stdout, stderr=stderr))
         if result.returncode not in ok:
             raise RuntimeError(f'{shlex.join(command)}: exit {result.returncode}: {stderr or stdout}')
-        return stdout
+        return result
+
+    def adb(self, *args, ok=(0,)):
+        return self.adb_result(*args, ok=ok).stdout.decode('utf-8', errors='replace').strip()
 
     def local(self, command):
         return self.adb('shell', f'run-as {PACKAGE} sh -c {shlex.quote(command)}')
@@ -38,8 +41,9 @@ class Fixture:
 
     def stop(self):
         self.adb('shell', 'am', 'force-stop', '--user', '0', PACKAGE)
-        if self.adb('shell', 'pidof', PACKAGE, ok=(0, 1)):
-            raise RuntimeError('Test app did not stop')
+        result = self.adb_result('shell', 'pidof', PACKAGE, ok=(0, 1))
+        if result.returncode != 1 or result.stdout.strip() or result.stderr.strip():
+            raise RuntimeError('Could not confirm test app stopped; see pidof diagnostics')
 
     def open(self):
         output = self.adb('shell', 'am', 'start', '-W', '--user', '0', '-n', ACTIVITY)
