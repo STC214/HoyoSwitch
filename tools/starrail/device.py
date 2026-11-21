@@ -6,8 +6,10 @@ owner, mode and SELinux context of game files survive.
 """
 
 import hashlib
+import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import uuid
 
@@ -80,19 +82,38 @@ class Device:
     def write(self, path, data):
         stamp = uuid.uuid4().hex
         remote = f'{REMOTE_TMP}/hoyoswitch-{stamp}'
-        local = tempfile.gettempdir() + f'/hoyoswitch-{stamp}'
-        with open(local, 'wb') as handle:
-            handle.write(data)
+        local = None
+        push_started = False
+        operation_failed = False
         try:
+            with tempfile.NamedTemporaryFile(prefix='hoyoswitch-', delete=False) as handle:
+                local = handle.name
+                handle.write(data)
+            push_started = True
             self._run(['push', local, remote])
             self.root(f'cat {shlex.quote(remote)} > {shlex.quote(path)}')
+        except BaseException:
+            operation_failed = True
+            raise
         finally:
-            self.root(f'rm -f {shlex.quote(remote)}', ok=(0, 1))
+            cleanup_errors = []
             try:
-                import os
-                os.unlink(local)
-            except OSError:
+                if local is not None:
+                    os.unlink(local)
+            except FileNotFoundError:
                 pass
+            except OSError as error:
+                cleanup_errors.append(('local', error))
+            if push_started:
+                try:
+                    self.root(f'rm -f {shlex.quote(remote)}')
+                except Exception as error:
+                    cleanup_errors.append(('device', error))
+            if cleanup_errors:
+                for where, error in cleanup_errors:
+                    print(f'{where} temporary file cleanup failed: {error}', file=sys.stderr)
+                if not operation_failed:
+                    raise RuntimeError('write completed but temporary file cleanup failed') from cleanup_errors[0][1]
 
     def set_metadata(self, path, uid, gid, mode, context):
         quoted = shlex.quote(path)

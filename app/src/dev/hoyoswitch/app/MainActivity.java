@@ -44,11 +44,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /** One screen, one section per game: status, capture and account cards for the selected game. */
 public final class MainActivity extends Activity {
@@ -89,6 +89,15 @@ public final class MainActivity extends Activity {
     private boolean followCurrentCard;
 
     private int refreshGeneration;
+    private boolean refreshInFlight;
+    private boolean pageResumed;
+    private SnapshotStore.RefreshData displayedData;
+    private String displayedStatusPrefix;
+    private final Consumer<GameProfile> snapshotObserver = selected -> {
+        if (selected == game) {
+            refresh();
+        }
+    };
     private ScrollView pageScroll;
     private ScrollView columnScroll;
     private Dialog visibleDialog;
@@ -100,6 +109,9 @@ public final class MainActivity extends Activity {
         // Start on the tab the app was closed on; self tests then run against that game.
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         game = GameProfile.byPackage(prefs.getString(PREF_GAME, GameProfile.STARRAIL.pkg));
+        if (state != null) {
+            game = GameProfile.byPackage(state.getString("ui.game", game.pkg));
+        }
         sortMode = prefs.getInt(PREF_SORT, SORT_LAST_USED);
         loadFixedOrder();
         store = new SnapshotStore(this);
@@ -108,7 +120,6 @@ public final class MainActivity extends Activity {
             sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
         }
         if (state != null) {
-            game = GameProfile.byPackage(state.getString("ui.game", game.pkg));
             saveGame();
             String log = state.getString("ui.log", "");
             if (logView != null && !log.isEmpty()) {
@@ -125,6 +136,7 @@ public final class MainActivity extends Activity {
             }
         }
         renderTabs();
+        showLoading();
         // Destructive self tests are only honoured by debug builds; a release APK ignores them.
         boolean debuggable = (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
         String selftest = debuggable ? getIntent().getStringExtra("selftest") : null;
@@ -280,6 +292,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        pageResumed = false;
+        ++refreshGeneration;
+        FloatingService.removeSnapshotObserver(snapshotObserver);
         super.onPause();
         saveGame();
     }
@@ -287,6 +302,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        pageResumed = true;
+        FloatingService.addSnapshotObserver(snapshotObserver);
         refresh();
     }
 
@@ -676,12 +693,18 @@ public final class MainActivity extends Activity {
         game = profile;
         saveGame();
         loadFixedOrder();
-        // Reflect the switch immediately and disable game actions until the new game's data
-        // arrives, so a tap on capture/launch (or a stale card) cannot act on the new game while
-        // the old game's UI is still on screen.
+        displayedData = null;
+        followCurrentCard = false;
         renderTabs();
+        showLoading();
+        appendLog("切换到分栏：" + profile.label);
+        refresh();
+    }
+
+    private void showLoading() {
+        displayedStatusPrefix = null;
         if (statusView != null) {
-            statusView.setText("正在加载" + profile.label + "…");
+            statusView.setText("正在加载" + game.label + "…");
         }
         if (captureButton != null) {
             captureButton.setEnabled(false);
@@ -695,8 +718,6 @@ public final class MainActivity extends Activity {
             cardList.removeAllViews();
         }
         currentCardView = null;
-        appendLog("切换到分栏：" + profile.label);
-        refresh();
     }
 
     private void saveGame() {
@@ -717,7 +738,7 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void saveFixedOrder() {
+    private void saveFixedOrder(GameProfile selected) {
         StringBuilder builder = new StringBuilder();
         for (String id : fixedOrder) {
             if (builder.length() > 0) {
@@ -726,7 +747,7 @@ public final class MainActivity extends Activity {
             builder.append(id);
         }
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_ORDER + game.pkg, builder.toString()).apply();
+                .putString(PREF_ORDER + selected.pkg, builder.toString()).apply();
     }
 
     private void toggleSort() {
@@ -736,19 +757,17 @@ public final class MainActivity extends Activity {
         if (sortToggle != null) {
             sortToggle.setText(sortMode == SORT_LAST_USED ? "排序：按操作时间" : "排序：固定顺序");
         }
-        // No store access here: the fixed order is seeded from the already-fetched list in the
-        // next refresh, so the click callback can never block the main thread on the store lock.
-        refresh();
+        renderDisplayedCards(game);
     }
 
     /** Seeds the fixed order from an already-fetched list, ordered by descending activity time. */
-    private void seedFixedOrderFrom(List<SnapshotStore.Snapshot> snapshots) {
+    private void seedFixedOrderFrom(GameProfile selected, List<SnapshotStore.Snapshot> snapshots) {
         snapshots.sort((left, right) -> Long.compare(activityTime(right), activityTime(left)));
         fixedOrder.clear();
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             fixedOrder.add(snapshot.id);
         }
-        saveFixedOrder();
+        saveFixedOrder(selected);
     }
 
     private void sortSnapshots(List<SnapshotStore.Snapshot> snapshots) {
@@ -803,7 +822,9 @@ public final class MainActivity extends Activity {
                 top += parent.getTop();
                 parent = (View) parent.getParent();
             }
-            scroll.smoothScrollTo(0, Math.max(0, top));
+            if (parent == child && pageResumed && !isDestroyed() && !isFinishing()) {
+                scroll.smoothScrollTo(0, Math.max(0, top));
+            }
         });
     }
 
@@ -812,12 +833,13 @@ public final class MainActivity extends Activity {
      * screen shows the card on top and the log underneath. Released as soon as the operation ends.
      */
     private void focusCard(SnapshotStore.Snapshot snapshot) {
-        if (cardOpActive) {
+        View card = cardViewFor(snapshot.id);
+        if (cardOpActive || snapshot.game != game || card == null) {
             return;
         }
         cardOpActive = true;
         moveLogBelowCard(snapshot.id);
-        scrollToView(cardViewFor(snapshot.id));
+        scrollToView(card);
     }
 
     private void unfocusCard() {
@@ -865,7 +887,7 @@ public final class MainActivity extends Activity {
                 parent.removeView(logScroll);
             }
             logHome.addView(logScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(columnScroll == null ? 120 : 180)));
         }
         focusedCardIndex = -1;
         focusedCardId = null;
@@ -887,31 +909,30 @@ public final class MainActivity extends Activity {
     }
 
     private void moveCard(SnapshotStore.Snapshot snapshot, int delta) {
-        if (sortMode != SORT_FIXED) {
+        if (sortMode != SORT_FIXED || displayedData == null || snapshot.game != game) {
             return;
         }
         int index = fixedOrder.indexOf(snapshot.id);
         if (index < 0) {
-            fixedOrder.add(snapshot.id);
-            index = fixedOrder.size() - 1;
+            return;
         }
         int target = index + delta;
         if (target < 0 || target >= fixedOrder.size()) {
             return;
         }
         Collections.swap(fixedOrder, index, target);
-        saveFixedOrder();
-        refresh();
+        saveFixedOrder(snapshot.game);
+        renderDisplayedCards(snapshot.game);
     }
 
-    private void ensureFixedOrder(List<SnapshotStore.Snapshot> snapshots) {
+    private void ensureFixedOrder(GameProfile selected, List<SnapshotStore.Snapshot> snapshots) {
         Set<String> present = new HashSet<>();
         for (SnapshotStore.Snapshot snapshot : snapshots) {
             present.add(snapshot.id);
         }
         List<String> kept = new ArrayList<>();
         for (String id : fixedOrder) {
-            if (present.contains(id)) {
+            if (present.contains(id) && !kept.contains(id)) {
                 kept.add(id);
             }
         }
@@ -923,96 +944,110 @@ public final class MainActivity extends Activity {
         if (!kept.equals(fixedOrder)) {
             fixedOrder.clear();
             fixedOrder.addAll(kept);
-            saveFixedOrder();
+            saveFixedOrder(selected);
         }
     }
 
     private void refresh() {
-        // Capture the target game and generation on the main thread so a refresh kicked off from a
-        // background operation can never read a stale game or claim a newer generation than a tab
-        // switch that just happened.
-        main.post(() -> {
-            final GameProfile selected = game;
-            final int generation = ++refreshGeneration;
-            new Thread(() -> {
-            boolean rooted = RootShell.isRooted();
-            boolean running;
-            String version;
-            List<SnapshotStore.Snapshot> snapshots;
-            SnapshotStore.Current current;
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            main.post(this::refresh);
+            return;
+        }
+        if (!pageResumed || isFinishing() || isDestroyed()) {
+            return;
+        }
+        // Invalidate the old request immediately, even if a worker is still finishing.
+        ++refreshGeneration;
+        startRefreshIfIdle();
+    }
+
+    private void startRefreshIfIdle() {
+        if (refreshInFlight || busy) {
+            return;
+        }
+        refreshInFlight = true;
+        final GameProfile selected = game;
+        final int generation = refreshGeneration;
+        new Thread(() -> {
             try {
-                running = selected.isRunning();
-                version = selected.version();
-            } catch (IOException error) {
-                running = false;
-                version = "";
-            }
-            if (!busy) {
-                // Cleanup renames/deletes snapshot directories; skip it while an operation owns them.
-                store.cleanup(selected);
-            }
-            snapshots = store.list(selected);
-            // Precompute per-card identity and decryptability here, off the main thread, so the
-            // result callback only consumes these instead of doing disk/crypto/SQLite work.
-            final Map<String, String> midById = new LinkedHashMap<>();
-            final Map<String, Boolean> readableById = new LinkedHashMap<>();
-            for (SnapshotStore.Snapshot snapshot : snapshots) {
-                midById.put(snapshot.id, store.accountMid(snapshot));
-                readableById.put(snapshot.id, store.decryptable(snapshot));
-            }
-            try {
-                current = store.detectCurrent(selected);
-            } catch (IOException error) {
-                current = null;
-            }
-            final boolean rootedNow = rooted;
-            final boolean runningNow = running;
-            final String versionNow = version;
-            final List<SnapshotStore.Snapshot> listed = snapshots;
-            final SnapshotStore.Current currentNow = current;
-            main.post(() -> {
-                // A stale result must be dropped both when its generation is superseded and when
-                // the tab changed since it started (game is switched synchronously on the main
-                // thread, before the generation bump is queued).
-                if (generation != refreshGeneration || selected != game) {
-                    return;
+                boolean rooted = RootShell.isRooted();
+                boolean running;
+                String version;
+                try {
+                    running = selected.isRunning();
+                    version = selected.version();
+                } catch (IOException error) {
+                    running = false;
+                    version = "";
                 }
-                // Sort and fixed-order maintenance run here, on the main thread, so a stale
-                // background refresh can never overwrite the fixed order of a newer tab.
-                if (sortMode == SORT_FIXED) {
-                    if (fixedOrder.isEmpty()) {
-                        // First entry into fixed mode: seed from this tab's current last-used
-                        // order, using the already-fetched list instead of touching the store.
-                        seedFixedOrderFrom(listed);
-                    } else {
-                        ensureFixedOrder(listed);
-                    }
-                }
-                sortSnapshots(listed);
-                SnapshotStore.Snapshot matched = match(currentNow, listed, midById);
-                String rootText = rootedNow ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
-                String gameText = versionNow.isEmpty()
-                        ? "未检测到" + selected.label
-                        : selected.label + " " + versionNow;
-                String accountText = selected.supported
-                        ? " · 当前账号：" + describe(currentNow, matched)
-                        : " · 尚未适配";
-                statusView.setText(rootText + " · " + gameText + " · "
-                        + (runningNow ? "游戏运行中" : "游戏已停止") + accountText);
-                // Stay clickable whenever the tap can be explained: running game / unsupported game.
-                captureButton.setEnabled(rootedNow && !busy);
-                captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
-                launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
-                launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
-                renderTabs();
-                renderCards(listed, matched == null ? null : matched.id, selected, readableById);
-                if (followCurrentCard) {
-                    followCurrentCard = false;
-                    scrollToCard();
-                }
-            });
-            }).start();
-        });
+                SnapshotStore.RefreshData data = store.readRefreshData(selected, !busy);
+                final boolean runningNow = running;
+                final String versionNow = version;
+                main.post(() -> finishRefresh(selected, generation, data, rooted,
+                        runningNow, versionNow));
+            } catch (RuntimeException error) {
+                Log.w("hoyoswitch", "snapshot refresh failed", error);
+                main.post(() -> finishRefresh(selected, generation, null, false, false, ""));
+            }
+        }, "snapshot-refresh").start();
+    }
+
+    private void finishRefresh(GameProfile selected, int generation, SnapshotStore.RefreshData data,
+                               boolean rooted, boolean running, String version) {
+        refreshInFlight = false;
+        if (!pageResumed || isFinishing() || isDestroyed()) {
+            return;
+        }
+        if (busy) {
+            return; // Operation completion starts a fresh read.
+        }
+        if (generation != refreshGeneration || selected != game) {
+            // Only run the latest pending request, not every intervening click.
+            startRefreshIfIdle();
+            return;
+        }
+        if (data == null) {
+            displayedStatusPrefix = null;
+            statusView.setText("刷新失败，请重试");
+            return;
+        }
+        displayedData = data;
+        String rootText = rooted ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
+        String gameText = version.isEmpty() ? "未检测到" + selected.label
+                : selected.label + " " + version;
+        displayedStatusPrefix = rootText + " · " + gameText + " · "
+                + (running ? "游戏运行中" : "游戏已停止");
+        renderDisplayedCards(selected);
+        captureButton.setEnabled(rooted && !busy);
+        captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
+        launchButton.setEnabled(!selected.activity.isEmpty() && !busy);
+        launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
+        if (followCurrentCard) {
+            followCurrentCard = false;
+            scrollToCard();
+        }
+    }
+
+    private void renderDisplayedCards(GameProfile selected) {
+        if (displayedData == null || selected != game) {
+            return;
+        }
+        List<SnapshotStore.Snapshot> listed = new ArrayList<>(displayedData.snapshots);
+        if (sortMode == SORT_FIXED) {
+            if (fixedOrder.isEmpty() && !listed.isEmpty()) {
+                seedFixedOrderFrom(selected, listed);
+            } else {
+                ensureFixedOrder(selected, listed);
+            }
+        }
+        sortSnapshots(listed);
+        SnapshotStore.Snapshot matched = match(displayedData.current, listed, displayedData.midById);
+        if (displayedStatusPrefix != null) {
+            String accountText = selected.supported
+                    ? " · 当前账号：" + describe(displayedData.current, matched) : " · 尚未适配";
+            statusView.setText(displayedStatusPrefix + accountText);
+        }
+        renderCards(listed, matched == null ? null : matched.id, selected, displayedData.readableById);
     }
 
     private void renderTabs() {
@@ -1032,14 +1067,18 @@ public final class MainActivity extends Activity {
         }
     }
 
-    /** Background-thread variant: computes account identity on the calling thread. */
+    /** Worker only: stops as soon as the current account is matched. */
     private SnapshotStore.Snapshot match(SnapshotStore.Current current,
                                          List<SnapshotStore.Snapshot> snapshots) {
-        Map<String, String> mids = new LinkedHashMap<>();
-        for (SnapshotStore.Snapshot snapshot : snapshots) {
-            mids.put(snapshot.id, store.accountMid(snapshot));
+        if (current == null || !current.loggedIn || current.mid.isEmpty()) {
+            return null;
         }
-        return match(current, snapshots, mids);
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            if (current.mid.equals(store.accountMid(snapshot))) {
+                return snapshot;
+            }
+        }
+        return null;
     }
 
     private SnapshotStore.Snapshot match(SnapshotStore.Current current,
@@ -1107,7 +1146,8 @@ public final class MainActivity extends Activity {
             cardList.addView(warning, matchWrap());
         }
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
-        for (SnapshotStore.Snapshot snapshot : snapshots) {
+        for (SnapshotStore.Snapshot cached : snapshots) {
+            SnapshotStore.Snapshot snapshot = SnapshotStore.copyForAction(cached);
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             boolean isCurrent = snapshot.id.equals(currentId);
@@ -1181,11 +1221,8 @@ public final class MainActivity extends Activity {
                 row.addView(down, downParams);
             }
             Button updateButton = pill("更新此快照", false);
-            updateButton.setOnClickListener(view -> {
-                focusCard(snapshot);
-                runOp("更新快照 " + snapshot.name,
-                        () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog));
-            });
+            updateButton.setOnClickListener(view -> runOp("更新快照 " + snapshot.name, snapshot,
+                    () -> AccountUpdater.updateTarget(store, snapshot, this::appendLog)));
             updateButton.setEnabled(readable);
             updateButton.setAlpha(readable ? 1f : 0.45f);
             Button moreButton = pill("⋯", false);
@@ -1562,10 +1599,11 @@ public final class MainActivity extends Activity {
         cancel.setOnClickListener(view -> dialog.dismiss());
         Button save = pill("保存", true);
         save.setOnClickListener(view -> {
+            String accountText = account.getText().toString();
+            String passwordText = password.getText().toString();
             dialog.dismiss();
             runOp("保存账号密码", () -> {
-                store.setCredentials(snapshot, account.getText().toString(),
-                        password.getText().toString());
+                store.setCredentials(snapshot, accountText, passwordText);
                 appendLog("已保存账号密码：" + snapshot.name);
             });
         });
@@ -1616,9 +1654,9 @@ public final class MainActivity extends Activity {
         cancel.setOnClickListener(view -> dialog.dismiss());
         Button save = pill("保存", true);
         save.setOnClickListener(view -> {
+            String name = input.getText().toString();
             dialog.dismiss();
-            focusCard(snapshot);
-            runOp("重命名", () -> store.rename(snapshot, input.getText().toString()));
+            runOp("重命名", snapshot, () -> store.rename(snapshot, name));
         });
         row.addView(cancel, weightWrap(1f, dp(4)));
         row.addView(save, weightWrap(1f, dp(4)));
@@ -1630,10 +1668,7 @@ public final class MainActivity extends Activity {
         showConfirm("删除快照",
                 "将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。",
                 "删除", true,
-                () -> {
-                    focusCard(snapshot);
-                    runOp("删除快照", () -> store.delete(snapshot));
-                },
+                () -> runOp("删除快照", snapshot, () -> store.delete(snapshot)),
                 null);
     }
 
@@ -1655,10 +1690,7 @@ public final class MainActivity extends Activity {
         showConfirm("回滚到 " + entry.label,
                 "快照内容会替换为该历史版本，当前版本先归档保留。继续？",
                 "回滚",
-                () -> {
-                    focusCard(snapshot);
-                    runOp("回滚历史版本", () -> store.restoreHistory(snapshot, entry));
-                });
+                () -> runOp("回滚历史版本", snapshot, () -> store.restoreHistory(snapshot, entry)));
     }
 
     private void confirmSwitch(SnapshotStore.Snapshot target) {
@@ -1671,47 +1703,50 @@ public final class MainActivity extends Activity {
             return;
         }
         busy = true;
+        ++refreshGeneration;
         appendLog("读取当前账号…");
         new Thread(() -> {
             try {
                 if (!store.decryptable(target)) {
                     appendLog("这张快照无法解密，不能切换");
-                    main.post(() -> toast("这张快照无法解密，请删除后重新拍摄"));
-                    busy = false;
-                    refresh();
+                    main.post(() -> {
+                        if (pageResumed && !isFinishing() && !isDestroyed()) {
+                            toast("这张快照无法解密，请删除后重新拍摄");
+                        }
+                        finishOperation(false);
+                    });
                     return;
                 }
                 SnapshotStore.Current current = store.detectCurrent(target.game);
                 if (current.loggedIn && !current.mid.isEmpty()
                         && current.mid.equals(store.accountMid(target))) {
                     appendLog("当前已经是这个账号，无需切换（不会关闭游戏）");
-                    main.post(() -> toast("当前已经是这个账号，无需切换"));
-                    busy = false;
-                    refresh();
+                    main.post(() -> {
+                        if (pageResumed && !isFinishing() && !isDestroyed()) {
+                            toast("当前已经是这个账号，无需切换");
+                        }
+                        finishOperation(false);
+                    });
                     return;
                 }
                 List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
                 main.post(() -> {
-                    if (!isFinishing() && !isDestroyed()) {
+                    if (pageResumed && !isFinishing() && !isDestroyed()) {
                         askSwitch(target, currentLabel);
                     } else {
-                        busy = false;
+                        finishOperation(false);
                     }
                 });
             } catch (Exception error) {
                 appendLog("失败：" + error.getMessage());
-                busy = false;
-                refresh();
+                main.post(() -> finishOperation(false));
             }
         }).start();
     }
 
     private void askSwitch(SnapshotStore.Snapshot target, String currentLabel) {
-        Runnable reset = () -> {
-            busy = false;
-            refresh();
-        };
+        Runnable reset = () -> finishOperation(false);
         showConfirm("切换" + target.game.label + "账号",
                 "当前账号：" + currentLabel
                         + "\n目标账号：" + target.name
@@ -1719,20 +1754,17 @@ public final class MainActivity extends Activity {
                         + target.game.switchFiles.size() + " 个账号文件，并自动保存切换前状态。继续？",
                 "切换",
                 () -> new Thread(() -> {
-                    main.post(() -> focusCard(target));
-                    try {
-                        if (target.game.isRunning()) {
-                            target.game.forceStop();
-                            appendLog("已停止" + target.game.label);
+                    main.post(() -> {
+                        if (pageResumed && !isFinishing() && !isDestroyed()) {
+                            focusCard(target);
                         }
-                        store.switchTo(target, true, this::appendLog);
+                    });
+                    try {
+                        store.stopAndSwitchTo(target, this::appendLog);
                     } catch (Exception error) {
                         appendLog("失败：" + error.getMessage());
                     } finally {
-                        busy = false;
-                        followCurrentCard = true;
-                        main.post(this::unfocusCard);
-                        refresh();
+                        main.post(() -> finishOperation(true));
                     }
                 }).start(),
                 reset);
@@ -1804,11 +1836,19 @@ public final class MainActivity extends Activity {
     }
 
     private void runOp(String label, Op operation) {
+        runOp(label, null, operation);
+    }
+
+    private void runOp(String label, SnapshotStore.Snapshot card, Op operation) {
         if (busy) {
             toast("上一个操作还没结束");
             return;
         }
         busy = true;
+        ++refreshGeneration;
+        if (card != null) {
+            focusCard(card);
+        }
         appendLog("开始：" + label);
         // Keep the status pill untouched: rewriting it changes its height and shifts the list.
         new Thread(() -> {
@@ -1819,15 +1859,25 @@ public final class MainActivity extends Activity {
                         ? error.getClass().getSimpleName() : error.getMessage();
                 appendLog("失败：" + message);
             } finally {
-                busy = false;
-                main.post(this::unfocusCard);
-                refresh();
+                main.post(() -> finishOperation(false));
             }
         }).start();
     }
 
+    private void finishOperation(boolean followCard) {
+        busy = false;
+        if (!isFinishing() && !isDestroyed()) {
+            followCurrentCard |= followCard;
+            unfocusCard();
+            refresh();
+        }
+    }
+
     private void appendLog(String message) {
         main.post(() -> {
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
             String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
             String line = time + "  " + message;
             String text = logView.getText().toString();

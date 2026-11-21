@@ -16,6 +16,10 @@ import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
+
 /**
  * Floating "更新快照" button. The user taps it after the game has loaded the switched account,
  * so the snapshot is refreshed only when they decide the login is real.
@@ -28,6 +32,16 @@ public final class FloatingService extends Service {
     private static final String PREF_FLOATING_GAME = "floating_game";
     static final String EXTRA_PACKAGE = "pkg";
     private static boolean running;
+    // Main-thread only. Activity observers are registered just while the page is resumed.
+    private static final List<Consumer<GameProfile>> snapshotObservers = new ArrayList<>();
+
+    static void addSnapshotObserver(Consumer<GameProfile> observer) {
+        snapshotObservers.add(observer);
+    }
+
+    static void removeSnapshotObserver(Consumer<GameProfile> observer) {
+        snapshotObservers.remove(observer);
+    }
 
     static boolean isRunning() {
         return running;
@@ -219,12 +233,18 @@ public final class FloatingService extends Service {
         }
         updating = true;
         toast("正在更新快照…");
+        final GameProfile selected = game;
         final SnapshotStore store = new SnapshotStore(this);
         new Thread(() -> {
             try {
-                String id = AccountUpdater.updateCurrent(store, game,
+                String id = AccountUpdater.updateCurrent(store, selected,
                         message -> Log.i("hoyoswitch", message));
                 toast("已更新快照 " + id);
+                new android.os.Handler(getMainLooper()).post(() -> {
+                    for (Consumer<GameProfile> observer : new ArrayList<>(snapshotObservers)) {
+                        observer.accept(selected);
+                    }
+                });
             } catch (Exception error) {
                 toast("更新失败：" + error.getMessage());
             } finally {

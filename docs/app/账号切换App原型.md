@@ -1,6 +1,6 @@
 # 账号切换 App
 
-文档同步：2026-11-20。应用名「米游账号切换」，包名 `dev.hoyoswitch.app`，当前版本 **1.5.7**（versionCode 52），支持星穹铁道 4.7.0、原神 7.2.0、绝区零 3.3.0。三款游戏均完成真机双向切换验证；正式签名包已通过 GitHub Release 发布。
+文档同步：2026-11-20。应用名「米游账号切换」，包名 `dev.hoyoswitch.app`，当前版本 **1.6.0**（versionCode 53），支持星穹铁道 4.7.0、原神 7.2.0、绝区零 3.3.0。三款游戏均完成真机双向切换验证；正式签名包已通过 GitHub Release 发布。
 
 > 当前说明以 1.4.6 为准；历史实测与发布记录保留当时的版本、时间和验证边界。本次文档同步不新增真机测试。
 
@@ -147,6 +147,16 @@ app/
 其他可选方向：多设备／多系统兼容性验证、签名迁移工具，以及按需清理历史中的旧账号标识；不表示这些功能已经实现。
 
 ## 8. 发布记录
+
+### 1.6.0（2026-11-21）
+
+- `versionCode 53`，刷新链路与 PC 工具重构：
+  - 新增 `SnapshotStore.RefreshData`（`current` + `snapshots` + `midById` + `readableById`）与 `readRefreshData()`，统一后台读取快照清单、当前账号、每卡账号标识与可读状态
+  - `MainActivity` 用 `displayedData` / `refreshInFlight` / `pageResumed` 管理刷新生命周期，渲染只消费已算好的结果
+  - `FloatingService` 增加快照观察者（`addSnapshotObserver`/`removeSnapshotObserver`），悬浮更新后自动触发对应分栏刷新
+  - PC 工具 `device.py` 写入改为临时文件 + push + 清理；`snapshot.py` 的 `sidecar_issues` 增加 `pending_writes` 参数
+- 单测 33 个通过
+- 标签：`v1.6.0`；Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.6.0>
 
 ### 1.5.7（2026-11-21）
 

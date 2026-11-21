@@ -5,8 +5,10 @@ Run from the repository root:  python -m unittest discover -s tools/starrail -p 
 
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
+import device
 import snapshot
 
 
@@ -129,6 +131,85 @@ class SidecarIssuesTest(unittest.TestCase):
         issues = snapshot.sidecar_issues(device, manifest, scope)
         self.assertEqual(issues, ['databases/PORTE_ACCOUNT_PRODUCT.db-journal: '
                                   'present but absent from snapshot'])
+
+    def test_journal_only_restore_checks_main_before_any_write(self):
+        db = snapshot.DATABASES[0]
+        journal = db + '-journal'
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx', size=4)
+        payload = {db: b'main', journal: b'new journal'}
+        manifest = {'files': [dict(path=path, present=True, sha256=device.digest(data), **metadata)
+                              for path, data in payload.items()]}
+        prefix = snapshot.DATA_DIR + '/'
+        for selected, main, expected_status, expected_writes in (
+            ((journal,), b'wrong main', 1, 0),
+            ((journal,), payload[db], 0, 1),
+            ((db, journal), b'wrong main', 0, 2),
+        ):
+            with self.subTest(selected=selected, main=main):
+                state = {prefix + db: main, prefix + journal: b'old journal'}
+                remote = mock.Mock()
+                remote.game_pids.return_value = []
+                remote.info.side_effect = lambda path: metadata if path in state else None
+                remote.read.side_effect = state.__getitem__
+                remote.write.side_effect = state.__setitem__
+
+                def local_path(record, relative):
+                    return mock.Mock(read_bytes=mock.Mock(return_value=payload[relative]))
+
+                with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
+                        mock.patch.object(snapshot, 'verify_local', return_value=[]), \
+                        mock.patch.object(snapshot, 'capture', return_value='fixture'), \
+                        mock.patch.object(snapshot, 'local_path', side_effect=local_path), \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    status = snapshot.restore(remote, mock.Mock(), True, selected)
+                self.assertEqual(status, expected_status)
+                self.assertEqual(remote.write.call_count, expected_writes)
+                if expected_status == 0:
+                    self.assertEqual(state[prefix + db], payload[db])
+                    self.assertEqual(state[prefix + journal], payload[journal])
+
+    def test_remote_verify_prints_database_group_mismatch(self):
+        db = snapshot.DATABASES[0]
+        journal = db + '-journal'
+        manifest = {'files': [dict(path=db, present=True, sha256=device.digest(b'x')),
+                              dict(path=journal, present=False)]}
+        remote = self._device(present=(db, journal))
+        stderr = io.StringIO()
+        with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
+                mock.patch.object(snapshot, 'verify_local', return_value=[]), \
+                mock.patch.object(snapshot, 'remote_state', return_value=[]), redirect_stderr(stderr):
+            self.assertEqual(snapshot.command_verify(remote, mock.Mock(), True), 1)
+        self.assertIn(f'{journal}: present but absent from snapshot', stderr.getvalue())
+
+
+class DeviceCleanupTest(unittest.TestCase):
+    def test_local_cleanup_runs_and_original_write_exception_survives(self):
+        remote = device.Device('fixture')
+        failure = OSError('write failure')
+        remote._run = mock.Mock()
+        remote.root = mock.Mock(side_effect=[failure, RuntimeError('offline')])
+        with mock.patch.object(device.tempfile, 'NamedTemporaryFile',
+                               mock.mock_open()) as temp, \
+                mock.patch.object(device.os, 'unlink') as unlink, \
+                redirect_stderr(io.StringIO()):
+            temp.return_value.name = 'synthetic-local-file'
+            with self.assertRaises(OSError) as caught:
+                remote.write('/fixture', b'data')
+        self.assertIs(caught.exception, failure)
+        unlink.assert_called_once_with('synthetic-local-file')
+
+    def test_remote_cleanup_failure_after_success_is_reported(self):
+        remote = device.Device('fixture')
+        remote._run = mock.Mock()
+        remote.root = mock.Mock(side_effect=[None, RuntimeError('offline')])
+        with mock.patch.object(device.tempfile, 'NamedTemporaryFile',
+                               mock.mock_open()) as temp, \
+                mock.patch.object(device.os, 'unlink') as unlink, \
+                redirect_stderr(io.StringIO()):
+            temp.return_value.name = 'synthetic-local-file'
+            with self.assertRaisesRegex(RuntimeError, 'write completed'):
+                remote.write('/fixture', b'data')
+        unlink.assert_called_once_with('synthetic-local-file')
 
 
 if __name__ == '__main__':

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,31 +158,37 @@ def is_database(rel):
     return rel.endswith('.db') or rel == 'databases/mihoyo_account'
 
 
-def sidecar_issues(device, manifest, scope):
-    """Problems with journal/WAL/SHM for databases in scope (stale or mismatched sidecars).
-
-    A sidecar is skipped only when it is both in scope and marked present in the snapshot, because
-    that is exactly what the restore loop will write. A sidecar absent from the snapshot but still
-    on the device is stale no matter whether its path happens to be in scope.
-    """
+def sidecar_issues(device, manifest, scope, *, pending_writes=True):
+    """Check complete database groups touched by the selection, including sidecar-only selection."""
+    scope = set(scope)
     present = {entry['path']: entry for entry in manifest['files'] if entry['present']}
-    issues = []
+    databases = set()
     for rel in scope:
-        if not is_database(rel):
-            continue
-        for suffix in ('-journal', '-wal', '-shm'):
-            side = rel + suffix
-            info = device.info(f'{DATA_DIR}/{side}')
-            if side in present:
-                if side in scope:
-                    continue  # restore will write this sidecar
-                snap = present[side]
+        base = rel
+        for suffix in SIDECARS:
+            if rel.endswith(suffix) and is_database(rel[:-len(suffix)]):
+                base = rel[:-len(suffix)]
+                break
+        if is_database(base):
+            databases.add(base)
+    issues = []
+    for db in sorted(databases):
+        if db not in present and any(db + suffix in present for suffix in SIDECARS):
+            issues.append(f'{db}: snapshot has a sidecar without its main database')
+        for suffix in ('',) + SIDECARS:
+            rel = db + suffix
+            snap = present.get(rel)
+            if pending_writes and snap is not None and rel in scope:
+                continue
+            path = f'{DATA_DIR}/{rel}'
+            info = device.info(path)
+            if snap is not None:
                 if info is None:
-                    issues.append(f'{side}: missing but snapshot expects it')
-                elif digest(device.read(f'{DATA_DIR}/{side}')) != snap['sha256']:
-                    issues.append(f'{side}: differs from snapshot')
+                    issues.append(f'{rel}: missing but snapshot expects it')
+                elif digest(device.read(path)) != snap['sha256']:
+                    issues.append(f'{rel}: differs from snapshot')
             elif info is not None:
-                issues.append(f'{side}: present but absent from snapshot')
+                issues.append(f'{rel}: present but absent from snapshot')
     return issues
 
 
@@ -260,7 +267,7 @@ def restore(device, record, apply, only=()):
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     leftover = show(rows)
-    stale = sidecar_issues(device, manifest, wanted)
+    stale = sidecar_issues(device, manifest, wanted, pending_writes=False)
     if stale:
         print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
         return 1
@@ -276,12 +283,13 @@ def restore(device, record, apply, only=()):
 def command_verify(device, record, remote):
     manifest = load_manifest(record)
     problems = verify_local(record, manifest)
-    for line in problems:
-        print(line, file=sys.stderr)
     if remote:
         problems += [f'{row[0]}: {row[1]}' for row in remote_state(device, manifest) if row[1] not in SAME + ('extra',)]
-        problems += sidecar_issues(device, manifest, {entry['path'] for entry in manifest['files']})
+        problems += sidecar_issues(device, manifest, {entry['path'] for entry in manifest['files']},
+                                   pending_writes=False)
     if problems:
+        for line in dict.fromkeys(problems):
+            print(line, file=sys.stderr)
         print(f'snapshot {record.name}: FAILED', file=sys.stderr)
         return 1
     print(f'snapshot {record.name}: OK' + (' (local + device)' if remote else ' (local copy)'))
@@ -293,7 +301,9 @@ def command_diff(device, record, only=()):
     wanted = {entry['path'] for entry in select(manifest['files'], only)}
     rows = [row for row in remote_state(device, manifest) if row[0] in wanted]
     differing = show(rows)
-    sidecar = sidecar_issues(device, manifest, wanted)
+    sidecar = sidecar_issues(device, manifest, wanted, pending_writes=False)
+    for issue in sidecar:
+        print(issue, file=sys.stderr)
     return 1 if (differing or sidecar) else 0
 
 
@@ -324,7 +334,7 @@ def main():
         if args.command == 'diff':
             return command_diff(device, Path(args.record).expanduser().resolve(), args.only)
         return restore(device, Path(args.record).expanduser().resolve(), args.apply, args.only)
-    except (RuntimeError, OSError, ValueError) as error:
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(error, file=sys.stderr)
         return 1
 
