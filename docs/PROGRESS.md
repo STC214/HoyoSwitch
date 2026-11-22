@@ -6,6 +6,7 @@
 
 ## 发布与待发布状态
 
+- **v1.7.3：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.3)（versionCode 63）。操作日志和悬浮按钮记住开关状态；悬浮按钮在权限仍有效时随 App 恢复，并保留原游戏绑定。设置写入成功后才应用；尚未做真机强杀重启或撤销权限测试。
 - **v1.7.2：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.2)（versionCode 62）。账号卡片分开显示状态与操作，底部保留「账号与密码」直达入口；窄屏或大字体时按钮按可用宽度换行。包含 v1.7.1 的免费和免责声明文案更新。
 - **v1.7.1：** 源码版本（versionCode 61）。README 与 App 捐赠页明确工具免费、捐赠自愿且不影响功能；关于页同步更新知识产权声明，两处均加粗重点文案。
 - **v1.7.0：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.0)（versionCode 60）。更多工具增加捐赠和关于页；README 置顶两张捐赠二维码，紧接与 App 一致的知识产权声明。

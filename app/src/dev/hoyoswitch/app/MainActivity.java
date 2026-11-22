@@ -97,6 +97,13 @@ public final class MainActivity extends Activity {
     private String displayedStatusPrefix;
     private String displayedTechnicalStatus;
     private boolean cardActionsAvailable;
+    private final Consumer<Boolean> settingsObserver = floatingChanged -> {
+        if (floatingChanged) {
+            syncSavedFloating();
+        } else {
+            setLogVisible(UiSettings.showLog(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)));
+        }
+    };
     private final Consumer<GameProfile> snapshotObserver = selected -> {
         if (selected == game) {
             refresh();
@@ -132,7 +139,6 @@ public final class MainActivity extends Activity {
             if (logView != null && !log.isEmpty()) {
                 logView.setText(log);
             }
-            setLogVisible(state.getBoolean("ui.logVisible", false));
         }
         renderTabs();
         showLoading();
@@ -299,8 +305,6 @@ public final class MainActivity extends Activity {
         if (logView != null) {
             out.putString("ui.log", logView.getText().toString());
         }
-        out.putBoolean("ui.logVisible",
-                logScroll != null && logScroll.getVisibility() == View.VISIBLE);
     }
 
     @Override
@@ -308,6 +312,7 @@ public final class MainActivity extends Activity {
         pageResumed = false;
         ++refreshGeneration;
         FloatingService.removeSnapshotObserver(snapshotObserver);
+        UiSettings.removeObserver(settingsObserver);
         super.onPause();
         saveGame();
     }
@@ -317,7 +322,26 @@ public final class MainActivity extends Activity {
         super.onResume();
         pageResumed = true;
         FloatingService.addSnapshotObserver(snapshotObserver);
+        UiSettings.addObserver(settingsObserver);
         refresh();
+    }
+
+    @Override
+    protected void onPostResume() {
+        super.onPostResume();
+        setLogVisible(UiSettings.showLog(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)));
+        syncSavedFloating();
+    }
+
+    private void syncSavedFloating() {
+        if (UiSettings.floatingGame(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)) == null) {
+            return;
+        }
+        if (Settings.canDrawOverlays(this)) {
+            startSavedFloating();
+        } else if (FloatingService.isRunning()) {
+            stopService(new Intent(this, FloatingService.class));
+        }
     }
 
     /** Landscape keeps the controls and account cards in independently scrolling columns. */
@@ -491,7 +515,7 @@ public final class MainActivity extends Activity {
         logScroll.addView(logView);
         logScroll.setBackground(surface(R.color.log_bg, R.color.log_bg, 22));
         logScroll.setPadding(dp(16), dp(14), dp(16), dp(14));
-        setLogVisible(false);
+        setLogVisible(UiSettings.showLog(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)));
 
         boolean wide = getResources().getConfiguration().orientation
                 == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
@@ -572,9 +596,17 @@ public final class MainActivity extends Activity {
 
     private void toggleLog() {
         boolean show = logScroll.getVisibility() != View.VISIBLE;
-        setLogVisible(show);
-        if (show) {
-            scrollToView(logSection);
+        if (!UiSettings.setShowLog(getSharedPreferences(PREFS_NAME, MODE_PRIVATE), show,
+                this::runOnUiThread, saved -> {
+                    if (pageResumed) {
+                        if (!saved) {
+                            toast("未能保存操作日志设置，请重试");
+                        } else if (show) {
+                            scrollToView(logSection);
+                        }
+                    }
+                })) {
+            toast("正在保存设置，请稍后再试");
         }
     }
 
@@ -593,8 +625,11 @@ public final class MainActivity extends Activity {
                 false, this::refresh));
         actions.add(new Action(android.R.drawable.ic_menu_preferences, "主题",
                 "当前选择：" + AppAppearance.mode(this).title, false, this::showAppearanceChoices));
+        GameProfile floatingGame = UiSettings.floatingGame(getSharedPreferences(PREFS_NAME, MODE_PRIVATE));
+        String floatingStatus = floatingGame == null ? "在游戏内更新当前快照"
+                : "绑定：" + floatingGame.label + (FloatingService.isRunning() ? "" : " · 待恢复");
         actions.add(new Action(android.R.drawable.ic_menu_preferences,
-                isFloatingRunning() ? "关闭悬浮按钮" : "开启悬浮按钮", "在游戏内更新当前快照",
+                floatingGame == null ? "开启悬浮按钮" : "关闭悬浮按钮", floatingStatus,
                 false, this::toggleFloating));
         actions.add(new Action(R.drawable.ic_history,
                 logScroll.getVisibility() == View.VISIBLE ? "隐藏操作日志" : "查看操作日志",
@@ -2013,6 +2048,19 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleFloating() {
+        if (UiSettings.isSaving()) {
+            toast("正在保存设置，请稍后再试");
+            return;
+        }
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (UiSettings.floatingGame(prefs) != null) {
+            UiSettings.setFloatingGame(prefs, null, this::runOnUiThread, saved -> {
+                if (pageResumed) {
+                    toast(saved ? "悬浮按钮已关闭" : "未能保存悬浮按钮设置，请重试");
+                }
+            });
+            return;
+        }
         if (!game.supported) {
             toast(game.label + " 尚未适配，悬浮按钮只支持已验证的游戏");
             return;
@@ -2023,37 +2071,28 @@ public final class MainActivity extends Activity {
                     Uri.parse("package:" + getPackageName())));
             return;
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
-        }
-        if (isFloatingRunning()) {
-            stopService(new Intent(this, FloatingService.class));
-            toast("悬浮按钮已关闭");
-        } else {
-            Intent intent = new Intent(this, FloatingService.class);
-            intent.putExtra(FloatingService.EXTRA_PACKAGE, game.pkg);
-            startForegroundService(intent);
-            toast("悬浮按钮已开启（" + game.label + "）：可拖动，点它更新快照");
-        }
+        UiSettings.setFloatingGame(prefs, game, this::runOnUiThread, saved -> {
+            if (!pageResumed) {
+                return;
+            }
+            if (!saved) {
+                toast("未能保存悬浮按钮设置，请重试");
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+        });
     }
 
-    /** The static flag can go stale if the process was killed; confirm with the system. */
-    private boolean isFloatingRunning() {
+    private void startSavedFloating() {
+        if (FloatingService.isRunning()) {
+            return;
+        }
         try {
-            android.app.ActivityManager manager =
-                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
-            for (android.app.ActivityManager.RunningServiceInfo info
-                    : manager.getRunningServices(Integer.MAX_VALUE)) {
-                if (FloatingService.class.getName().equals(info.service.getClassName())
-                        && info.pid == android.os.Process.myPid()) {
-                    return true;
-                }
-            }
-            return false;
-        } catch (RuntimeException error) {
-            return FloatingService.isRunning();
+            startForegroundService(new Intent(this, FloatingService.class));
+        } catch (IllegalStateException | SecurityException error) {
+            Log.w("hoyoswitch", "悬浮按钮启动请求失败", error);
         }
     }
 

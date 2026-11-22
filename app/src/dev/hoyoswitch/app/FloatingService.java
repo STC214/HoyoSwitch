@@ -11,6 +11,7 @@ import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -30,10 +31,6 @@ import java.util.function.Consumer;
 public final class FloatingService extends Service {
     private static final String CHANNEL = "floating";
     private static final int NOTIFICATION_ID = 1;
-    private static final String PREFS_NAME = "ui";
-    private static final String PREF_GAME = "game";
-    private static final String PREF_FLOATING_GAME = "floating_game";
-    static final String EXTRA_PACKAGE = "pkg";
     private static boolean running;
     // Main-thread only. Activity observers are registered just while the page is resumed.
     private static final List<Consumer<GameProfile>> snapshotObservers = new ArrayList<>();
@@ -55,6 +52,12 @@ public final class FloatingService extends Service {
 
     private WindowManager windowManager;
     private TextView button;
+    private final Consumer<Boolean> settingsObserver = floatingChanged -> {
+        if (floatingChanged && running
+                && UiSettings.floatingGame(AppAppearance.preferences(this)) == null) {
+            stopSelf();
+        }
+    };
     private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener = (prefs, key) -> {
         if ((key == null || AppAppearance.MODE_KEY.equals(key)) && button != null) {
             applyButtonTheme(button);
@@ -70,52 +73,37 @@ public final class FloatingService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        running = true;
-        game = resolveGame(null);
-        startAsForeground();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         AppAppearance.preferences(this).registerOnSharedPreferenceChangeListener(appearanceListener);
-        try {
-            addButton();
-        } catch (RuntimeException error) {
-            Log.w("hoyoswitch", "无法显示悬浮按钮", error);
-            toast("无法显示悬浮按钮，请检查悬浮窗权限");
-            stopSelf();
-        }
+        UiSettings.addObserver(settingsObserver);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        game = resolveGame(intent);
-        if (intent != null && intent.hasExtra(EXTRA_PACKAGE)) {
-            NotificationManager manager =
-                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (manager != null) {
-                manager.notify(NOTIFICATION_ID, buildNotification());
+        // Both explicit starts and system restarts must honour the latest switch value.
+        GameProfile savedGame = UiSettings.floatingGame(AppAppearance.preferences(this));
+        boolean showButton = savedGame != null && Settings.canDrawOverlays(this);
+        if (showButton) {
+            game = savedGame;
+        }
+        try {
+            // Even a cancelled start must satisfy startForegroundService's promotion contract.
+            startAsForeground(showButton);
+            if (!showButton) {
+                stopSelfResult(startId);
+                return START_NOT_STICKY;
             }
+            if (button == null) {
+                addButton();
+            }
+            running = true;
+            return START_STICKY;
+        } catch (RuntimeException error) {
+            Log.w("hoyoswitch", "无法显示悬浮按钮", error);
+            toast("悬浮按钮暂未显示，请检查悬浮窗权限");
+            stopSelfResult(startId);
+            return START_NOT_STICKY;
         }
-        return START_STICKY;
-    }
-
-    /**
-     * Resolves the game from the intent, falling back to the last selection so a service
-     * restarted by the system (null intent) does not silently update the wrong game's snapshot.
-     */
-    private GameProfile resolveGame(Intent intent) {
-        String pkg = intent == null ? null : intent.getStringExtra(EXTRA_PACKAGE);
-        if (pkg == null || pkg.isEmpty()) {
-            // The service tracks its own bound game, separate from the tab the UI is showing.
-            pkg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .getString(PREF_FLOATING_GAME, null);
-        }
-        if (pkg == null || pkg.isEmpty()) {
-            pkg = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                    .getString(PREF_GAME, GameProfile.STARRAIL.pkg);
-        }
-        GameProfile resolved = GameProfile.byPackage(pkg);
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_FLOATING_GAME, resolved.pkg).apply();
-        return resolved;
     }
 
     @Override
@@ -125,6 +113,7 @@ public final class FloatingService extends Service {
 
     @Override
     public void onDestroy() {
+        UiSettings.removeObserver(settingsObserver);
         AppAppearance.preferences(this).unregisterOnSharedPreferenceChangeListener(appearanceListener);
         running = false;
         if (button != null && windowManager != null) {
@@ -146,20 +135,20 @@ public final class FloatingService extends Service {
         }
     }
 
-    private void startAsForeground() {
+    private void startAsForeground(boolean showButton) {
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(CHANNEL, "悬浮按钮",
                     NotificationManager.IMPORTANCE_LOW);
             manager.createNotificationChannel(channel);
         }
-        startForeground(NOTIFICATION_ID, buildNotification());
+        startForeground(NOTIFICATION_ID, buildNotification(showButton));
     }
 
-    private Notification buildNotification() {
+    private Notification buildNotification(boolean showButton) {
         return new Notification.Builder(this, CHANNEL)
-                .setContentTitle("米游账号切换 · " + game.label)
-                .setContentText("悬浮按钮已开启：切换后点它更新快照")
+                .setContentTitle(showButton ? "米游账号切换 · " + game.label : "米游账号切换")
+                .setContentText(showButton ? "悬浮按钮已开启：切换后点它更新快照" : "正在停止悬浮服务")
                 .setSmallIcon(android.R.drawable.ic_menu_save)
                 .setOngoing(true)
                 .build();
