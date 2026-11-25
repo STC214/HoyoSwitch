@@ -18,6 +18,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -28,6 +29,7 @@ import android.provider.Settings;
 import android.text.Layout;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -83,6 +85,9 @@ public final class MainActivity extends Activity {
     private static final int SORT_FIXED = 1;
     private int sortMode = SORT_LAST_USED;
     private final List<String> fixedOrder = new ArrayList<>();
+    private CardDrag cardDrag;
+    private boolean cardOrderRenderPending;
+    private final Runnable dragScrollStep = this::scrollDuringCardDrag;
     private boolean cardOpActive;
     private int focusedCardIndex = -1;
     private String focusedCardId;
@@ -310,6 +315,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         pageResumed = false;
+        cancelCardDrag();
         ++refreshGeneration;
         FloatingService.removeSnapshotObserver(snapshotObserver);
         UiSettings.removeObserver(settingsObserver);
@@ -505,6 +511,7 @@ public final class MainActivity extends Activity {
         TextView accountsHeading = section("账号快照");
         cardList = new LinearLayout(this);
         cardList.setOrientation(LinearLayout.VERTICAL);
+        cardList.setOnDragListener((view, event) -> handleCardDrag(event));
 
         logSection = section("操作日志");
         logView = new TextView(this);
@@ -814,6 +821,7 @@ public final class MainActivity extends Activity {
             launchButton.setAlpha(0.45f);
         }
         if (cardList != null) {
+            cancelCardDrag();
             cardList.removeAllViews();
         }
         currentCardView = null;
@@ -846,7 +854,8 @@ public final class MainActivity extends Activity {
             builder.append(id);
         }
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                .putString(PREF_ORDER + selected.pkg, builder.toString()).apply();
+                .putString(PREF_ORDER + selected.pkg, builder.toString())
+                .putInt(PREF_SORT, sortMode).apply();
     }
 
     private void toggleSort() {
@@ -1002,6 +1011,196 @@ public final class MainActivity extends Activity {
     private View cardViewFor(String snapshotId) {
         int index = cardIndexFor(snapshotId);
         return index < 0 ? null : cardList.getChildAt(index);
+    }
+
+    private static final class CardDrag {
+        final View handle;
+        final View source;
+        final GameProfile game;
+        final int sortMode;
+        final List<View> cards;
+        final int sourceIndex;
+        final int[] listLocation = new int[2];
+        final int[] scrollLocation = new int[2];
+        View target;
+        boolean after;
+        float screenY;
+
+        CardDrag(View handle, View source, GameProfile game, int sortMode, List<View> cards) {
+            this.handle = handle;
+            this.source = source;
+            this.game = game;
+            this.sortMode = sortMode;
+            this.cards = cards;
+            this.sourceIndex = cards.indexOf(source);
+        }
+    }
+
+    private boolean startCardDrag(View handle, View card) {
+        if (!pageResumed || busy || cardOpActive || cardDrag != null || cardOrderRenderPending
+                || card.getParent() != cardList) {
+            return false;
+        }
+        List<View> cards = new ArrayList<>();
+        for (int index = 0; index < cardList.getChildCount(); index++) {
+            View child = cardList.getChildAt(index);
+            if (child.getTag() instanceof String) {
+                cards.add(child);
+            }
+        }
+        if (cards.size() < 2) {
+            return false;
+        }
+        CardDrag drag = new CardDrag(handle, card, game, sortMode, cards);
+        cardDrag = drag;
+        if (!handle.startDragAndDrop(null, new View.DragShadowBuilder(card), drag, 0)) {
+            cardDrag = null;
+            return false;
+        }
+        card.setAlpha(0.55f);
+        return true;
+    }
+
+    private boolean handleCardDrag(DragEvent event) {
+        CardDrag drag = cardDrag;
+        if (drag == null || event.getLocalState() != drag) {
+            return false;
+        }
+        switch (event.getAction()) {
+            case DragEvent.ACTION_DRAG_STARTED:
+            case DragEvent.ACTION_DRAG_ENTERED:
+                return true;
+            case DragEvent.ACTION_DRAG_LOCATION:
+                updateCardDrop(drag, event.getY());
+                cardList.getLocationOnScreen(drag.listLocation);
+                drag.screenY = drag.listLocation[1] + event.getY();
+                main.removeCallbacks(dragScrollStep);
+                main.post(dragScrollStep);
+                return true;
+            case DragEvent.ACTION_DRAG_EXITED:
+                main.removeCallbacks(dragScrollStep);
+                markCardDrop(drag, null, false);
+                return true;
+            case DragEvent.ACTION_DROP:
+                updateCardDrop(drag, event.getY());
+                boolean moved = applyCardDrop(drag);
+                clearCardDrag();
+                if (moved) {
+                    // Keep the old view order unavailable for another drag until it is redrawn.
+                    cardOrderRenderPending = true;
+                    main.post(() -> {
+                        cardOrderRenderPending = false;
+                        if (!isDestroyed() && !isFinishing()) {
+                            renderDisplayedCards(drag.game);
+                        }
+                    });
+                }
+                return moved;
+            case DragEvent.ACTION_DRAG_ENDED:
+                clearCardDrag();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void updateCardDrop(CardDrag drag, float y) {
+        int index = 0;
+        while (index < drag.cards.size() - 1 && y >= drag.cards.get(index).getBottom()) {
+            index++;
+        }
+        View candidate = drag.cards.get(index);
+        boolean after = y >= candidate.getTop() + candidate.getHeight() / 2f;
+        boolean moves = SnapshotReorder.destination(drag.sourceIndex, index, after) >= 0;
+        markCardDrop(drag, moves ? candidate : null, moves && after);
+    }
+
+    private void markCardDrop(CardDrag drag, View target, boolean after) {
+        if (drag.target == target && drag.after == after) {
+            return;
+        }
+        if (drag.target != null && drag.target != drag.source) {
+            drag.target.setForeground(null);
+        }
+        drag.target = target;
+        drag.after = after;
+        if (target != null && target != drag.source) {
+            LayerDrawable marker = new LayerDrawable(new ColorDrawable[] {
+                    new ColorDrawable(getColor(R.color.accent))
+            });
+            marker.setLayerHeight(0, dp(3));
+            marker.setLayerGravity(0, (after ? Gravity.BOTTOM : Gravity.TOP) | Gravity.FILL_HORIZONTAL);
+            target.setForeground(marker);
+        }
+    }
+
+    private void scrollDuringCardDrag() {
+        CardDrag drag = cardDrag;
+        ScrollView scroll = activeScroll();
+        if (drag == null || scroll == null || busy || cardOpActive) {
+            return;
+        }
+        scroll.getLocationOnScreen(drag.scrollLocation);
+        int edge = Math.min(dp(64), scroll.getHeight() / 3);
+        float y = drag.screenY - drag.scrollLocation[1];
+        int step = y >= 0 && y < edge ? -dp(12)
+                : y <= scroll.getHeight() && y > scroll.getHeight() - edge ? dp(12) : 0;
+        if (step != 0) {
+            cardList.getLocationOnScreen(drag.listLocation);
+            int listTop = drag.listLocation[1];
+            int viewTop = drag.scrollLocation[1] + scroll.getPaddingTop();
+            int viewBottom = drag.scrollLocation[1] + scroll.getHeight() - scroll.getPaddingBottom();
+            // Stop at the ends of the card list, even if the page also has a log section.
+            step = step < 0 ? Math.max(step, Math.min(0, listTop - viewTop))
+                    : Math.min(step, Math.max(0, listTop + cardList.getHeight() - viewBottom));
+            int previous = scroll.getScrollY();
+            scroll.scrollBy(0, step);
+            if (scroll.getScrollY() != previous) {
+                cardList.getLocationOnScreen(drag.listLocation);
+                updateCardDrop(drag, drag.screenY - drag.listLocation[1]);
+                main.postDelayed(dragScrollStep, 16);
+            }
+        }
+    }
+
+    private boolean applyCardDrop(CardDrag drag) {
+        if (!pageResumed || busy || cardOpActive || drag.game != game || drag.sortMode != sortMode
+                || drag.source.getParent() != cardList || drag.target == null) {
+            return false;
+        }
+        List<String> order = new ArrayList<>();
+        for (View card : drag.cards) {
+            if (card.getParent() != cardList) {
+                return false;
+            }
+            order.add((String) card.getTag());
+        }
+        if (!SnapshotReorder.move(order, (String) drag.source.getTag(),
+                (String) drag.target.getTag(), drag.after)) {
+            return false;
+        }
+        fixedOrder.clear();
+        fixedOrder.addAll(order);
+        sortMode = SORT_FIXED;
+        saveFixedOrder(drag.game);
+        return true;
+    }
+
+    private void clearCardDrag() {
+        main.removeCallbacks(dragScrollStep);
+        if (cardDrag != null) {
+            markCardDrop(cardDrag, null, false);
+            cardDrag.source.setAlpha(1f);
+            cardDrag = null;
+        }
+    }
+
+    private void cancelCardDrag() {
+        CardDrag drag = cardDrag;
+        if (drag != null) {
+            clearCardDrag();
+            drag.handle.cancelDragAndDrop();
+        }
     }
 
     private void moveCard(SnapshotStore.Snapshot snapshot, int delta) {
@@ -1318,6 +1517,7 @@ public final class MainActivity extends Activity {
 
     private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
                              GameProfile selected, Map<String, Boolean> readableById) {
+        cancelCardDrag();
         ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
         int savedScrollY = scroll == null ? 0 : scroll.getScrollY();
         currentCardView = null;
@@ -1397,6 +1597,16 @@ public final class MainActivity extends Activity {
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 badgeParams.leftMargin = dp(8);
                 heading.addView(currentBadge, badgeParams);
+            }
+            if (snapshots.size() > 1) {
+                Button handle = pill("↕", false);
+                handle.setContentDescription("拖动排序：" + snapshot.name);
+                handle.setOnClickListener(view -> toast("长按并拖动手柄可调整快照顺序"));
+                handle.setOnLongClickListener(view -> startCardDrag(view, card));
+                LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(48),
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                handleParams.setMarginStart(dp(8));
+                heading.addView(handle, handleParams);
             }
             card.addView(heading, matchWrap());
 
