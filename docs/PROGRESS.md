@@ -6,7 +6,7 @@
 
 ## 发布与待发布状态
 
-- **v1.7.5：** 未发布（versionCode 65）。失效快照可保留卡片就地更新（名称/备注/账号密码/顺序不变，确认后用当前登录状态覆盖）；固定排序下新卡追加到最底部；切换确认框在页面重建时正确复位 `busy`；PC 工具区分 `adb shell`（可见退出码）与 `exec-out`（二进制读取）。验证边界：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto 等）与 debug/release 构建、证书指纹校验通过；真机验证 device 传输层四项探针与 `snapshot.py diff`，未重做真机切换或失效卡更新验证。
+- **v1.7.5：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.5)（versionCode 65）。失效快照可保留卡片就地更新（名称/备注/账号密码/顺序不变，确认后用当前登录状态覆盖）；固定排序下新卡追加到最底部；切换确认框在页面重建时正确复位 `busy`；聚焦期间真正锁定账号区滚动；PC 工具区分 `adb shell`（可见退出码）与 `exec-out`（二进制读取），写入改两阶段、恢复中断自动回滚。验证边界：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto/UiSettings）与 debug/release 构建、证书指纹校验通过；真机验证安装升级、当前账号识别、快照写入全字节往返与 `snapshot.py diff`，未重做真机切换或失效卡更新验证。
 - **v1.7.4：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.4)（versionCode 64）。快照卡片支持长按手柄拖动，换位后切到固定顺序，并按游戏保存。模拟器验证上下拖动、边缘滚动、取消拖放、重启保序及跨游戏隔离。
 - **v1.7.3：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.3)（versionCode 63）。操作日志和悬浮按钮记住开关状态；悬浮按钮在权限仍有效时随 App 恢复，并保留原游戏绑定。设置写入成功后才应用；尚未做真机强杀重启或撤销权限测试。
 - **v1.7.2：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.2)（versionCode 62）。账号卡片分开显示状态与操作，底部保留「账号与密码」直达入口；窄屏或大字体时按钮按可用宽度换行。包含 v1.7.1 的免费和免责声明文案更新。

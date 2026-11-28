@@ -174,6 +174,15 @@ app/
 
 ## 8. 发布记录
 
+### 1.7.5（2026-11-28）
+
+- `versionCode 65`。失效快照可保留原卡片就地更新：名称、备注、账号与密码、排序都不变，确认后用当前登录状态覆盖；无法读取的卡主按钮改为「更新快照」。
+- 固定排序下新增快照追加到最底部；切换确认框在页面重建（旋转/回收）时正确复位 `busy`，不再整页卡死；聚焦期间真正锁定账号区滚动。
+- 密码备注改用应用本地密钥（`files/password-notes.key`）；偏好读取对类型损坏做回退；缩放悬浮按钮在配置变化后重新夹取。
+- PC 工具：`adb shell` 取退出码、`exec-out` 读二进制、base64 两阶段写入、恢复中断自动回滚；`build.py` 固定发布证书指纹并在缺密钥时拒绝构建。
+- 验证：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto/UiSettings 等）与 debug/release 构建通过；真机验证安装升级、当前账号识别、快照写入全字节往返与 `snapshot.py diff`。
+- 标签：`v1.7.5`；Release：<https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.5>
+
 ### 1.7.4（2026-11-25）
 
 - `versionCode 64`。快照卡片可长按「↕」拖动；一次有效换位会切到固定顺序并按游戏保存，原有的上移和下移入口保留。
