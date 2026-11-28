@@ -11,6 +11,7 @@ public final class CardDisplaySignatureTest {
         card.id = "fixture";
         card.name = "fixture-name";
         List<Object> original = stamp(card, false, true);
+        List<Object> expectedOriginal = new ArrayList<>(original);
         check(original.equals(stamp(card, false, true)), "unchanged card should reuse views");
         check(!original.equals(stamp(card, true, true)), "preview must become live");
         check(!original.equals(stamp(card, false, false)), "action availability must refresh");
@@ -26,7 +27,7 @@ public final class CardDisplaySignatureTest {
         List<Object> withEntry = stamp(card, false, true);
         entry.sha256 = "new-digest";
         check(!withEntry.equals(stamp(card, false, true)), "file changes must refresh");
-        check(new ArrayList<>(original).equals(original), "signature should be immutable by card edits");
+        check(expectedOriginal.equals(original), "signature should be immutable by card edits");
         System.out.println("Card display signature: PASS");
     }
 

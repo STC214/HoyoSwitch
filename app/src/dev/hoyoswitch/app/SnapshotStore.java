@@ -1235,16 +1235,17 @@ final class SnapshotStore {
                 // Safety captures must not become the card's permanent name.
                 renameSafely(primary, isSessionName(snapshot.name) ? primary.id : snapshot.name);
             }
-            if (primary.loginName.isEmpty() && !snapshot.loginName.isEmpty()) {
-                primary.loginName = snapshot.loginName;
-                primary.passwordEnc = snapshot.passwordEnc;
+            if (inheritCardNotes(primary, snapshot)) {
                 try {
                     saveManifest(primary);
-                } catch (IOException ignored) {
-                    // Cosmetic; the merge below still has to happen.
+                } catch (IOException error) {
+                    // Password notes are user data, not cosmetic: do not remove their source
+                    // card until the inherited notes have been persisted successfully.
+                    keepByAccount.remove(mid);
+                    Log.w("hoyoswitch", "备注保存失败，保留两张卡片等待重试", error);
+                    return Collections.emptyMap();
                 }
             }
-            primary.lastUsedAt = Math.max(primary.lastUsedAt, snapshot.lastUsedAt);
             if (!mergeHistory(historyDir, primary, snapshot)) {
                 Log.w("hoyoswitch", "历史合并未完成，保留 " + snapshot.id + " 待下次重试");
             }
@@ -1260,6 +1261,23 @@ final class SnapshotStore {
             mids.put(entry.getValue().id, entry.getKey());
         }
         return mids;
+    }
+
+    static boolean inheritCardNotes(Snapshot primary, Snapshot older) {
+        boolean changed = false;
+        if (primary.loginName.isEmpty() && !older.loginName.isEmpty()) {
+            primary.loginName = older.loginName;
+            changed = true;
+        }
+        if (primary.passwordEnc.isEmpty() && !older.passwordEnc.isEmpty()) {
+            primary.passwordEnc = older.passwordEnc;
+            changed = true;
+        }
+        if (older.lastUsedAt > primary.lastUsedAt) {
+            primary.lastUsedAt = older.lastUsedAt;
+            changed = true;
+        }
+        return changed;
     }
 
     private void renameSafely(Snapshot snapshot, String name) {
@@ -2140,11 +2158,7 @@ final class SnapshotStore {
             JSONObject item = files.getJSONObject(index);
             Entry entry = new Entry();
             entry.path = item.getString("path");
-            if (!isSafeRelative(entry.path)) {
-                // Paths drive root-level reads/writes and deletes; a manifest must never escape
-                // the game's own file list into arbitrary device paths.
-                throw new IOException("快照清单文件路径非法: " + entry.path);
-            }
+            validateManifestEntry(game, entry.path, snapshot.entries.containsKey(entry.path));
             entry.present = item.getBoolean("present");
             entry.size = item.optLong("size");
             entry.sha256 = item.optString("sha256");
@@ -2156,6 +2170,16 @@ final class SnapshotStore {
             snapshot.entries.put(entry.path, entry);
         }
         return snapshot;
+    }
+
+    static void validateManifestEntry(GameProfile game, String relative, boolean duplicate)
+            throws IOException {
+        if (!isSafeRelative(relative) || !game.files.contains(relative)) {
+            throw new IOException("快照清单包含非预设文件路径: " + relative);
+        }
+        if (duplicate) {
+            throw new IOException("快照清单包含重复文件路径: " + relative);
+        }
     }
 
     /** A manifest path must stay a plain relative path inside the snapshot payload tree. */

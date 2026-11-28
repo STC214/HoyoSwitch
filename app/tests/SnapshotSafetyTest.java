@@ -14,6 +14,31 @@ import java.util.function.BiConsumer;
 /** Standalone regression for process detection and checked snapshot deletion. */
 public final class SnapshotSafetyTest {
     public static void main(String[] args) throws IOException {
+        SnapshotStore.Snapshot primaryNotes = new SnapshotStore.Snapshot();
+        SnapshotStore.Snapshot olderNotes = new SnapshotStore.Snapshot();
+        primaryNotes.loginName = "already-named";
+        olderNotes.passwordEnc = "password-only-fixture";
+        olderNotes.lastUsedAt = 42;
+        if (!SnapshotStore.inheritCardNotes(primaryNotes, olderNotes)
+                || !"password-only-fixture".equals(primaryNotes.passwordEnc)
+                || !"already-named".equals(primaryNotes.loginName) || primaryNotes.lastUsedAt != 42) {
+            throw new AssertionError("password-only note or last-used timestamp was lost");
+        }
+        olderNotes.passwordEnc = "different-password";
+        if (SnapshotStore.inheritCardNotes(primaryNotes, olderNotes)
+                || !"password-only-fixture".equals(primaryNotes.passwordEnc)) {
+            throw new AssertionError("newer password was overwritten");
+        }
+        for (GameProfile game : GameProfile.ALL) {
+            for (String relative : game.files) {
+                SnapshotStore.validateManifestEntry(game, relative, false);
+                expectIo(() -> SnapshotStore.validateManifestEntry(game, relative, true), "重复");
+            }
+            for (String relative : new String[]{"../outside.xml", "/data/system/fixture",
+                    "shared_prefs/unlisted.xml", "shared_prefs//fixture.xml"}) {
+                expectIo(() -> SnapshotStore.validateManifestEntry(game, relative, false), "非预设");
+            }
+        }
         if (!GameProfile.parseRunningPids(result(0, "123 456", ""))
                 .equals(Arrays.asList("123", "456"))) {
             throw new AssertionError("missing PIDs");

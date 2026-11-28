@@ -18,8 +18,12 @@ def adb(*args):
 
 
 def tree():
-    adb('shell', 'uiautomator', 'dump', REMOTE_TREE)
-    root = ET.fromstring(adb('exec-out', 'cat', REMOTE_TREE))
+    try:
+        adb('shell', 'uiautomator', 'dump', REMOTE_TREE)
+        root = ET.fromstring(adb('exec-out', 'cat', REMOTE_TREE))
+    finally:
+        # UI trees can contain private card labels; do not leave the temporary dump behind.
+        adb('shell', 'rm', '-f', REMOTE_TREE)
     if not any(node.get('package') == PACKAGE for node in root.iter('node')):
         raise RuntimeError('Account tool is not foreground; no taps were sent.')
     return root
@@ -28,6 +32,18 @@ def tree():
 def timing_lines():
     return [line for line in adb('logcat', '-d', '-v', 'brief', '-s', 'HoyoUiTiming').decode(
         'utf-8', errors='replace').splitlines() if 'frame_callback_ms=' in line]
+
+
+def rapid_sequence(root):
+    selected = [node.get('text') for node in root.iter('node')
+                if node.get('package') == PACKAGE and node.get('text') in TABS
+                and node.get('class') == 'android.widget.Button' and node.get('selected') == 'true']
+    if len(selected) != 1:
+        raise RuntimeError('Expected exactly one selected tab; no rapid taps sent.')
+    index = TABS.index(selected[0])
+    sequence = TABS[index + 1:] + TABS[:index + 1]
+    # End on a different tab: if input silently has no effect, the test must fail.
+    return sequence * 2 + sequence[:-1]
 
 
 def main():
@@ -72,7 +88,8 @@ def main():
     if args.rapid_only:
         root = tree()
         commands = []
-        for label in TABS * 3:
+        labels = rapid_sequence(root)
+        for label in labels:
             buttons = [node for node in root.iter('node') if node.get('package') == PACKAGE
                        and node.get('text') == label and node.get('class') == 'android.widget.Button']
             if len(buttons) != 1:
@@ -85,7 +102,9 @@ def main():
             adb('shell', 'su', '-c', command)
         time.sleep(2)
         final = tree()
-        result['rapid_passed'] = any(node.get('text') == TABS[-1] and node.get('selected') == 'true'
+        result['rapid_passed'] = any(node.get('package') == PACKAGE
+                                     and node.get('class') == 'android.widget.Button'
+                                     and node.get('text') == labels[-1] and node.get('selected') == 'true'
                                      for node in final.iter('node'))
         if not result['rapid_passed']:
             raise RuntimeError('Final rapid-selection tab mismatch.')
