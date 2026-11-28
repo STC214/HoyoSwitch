@@ -19,6 +19,23 @@ final class UiSettings {
 
     private UiSettings() {}
 
+    static String readString(SharedPreferences prefs, String key, String fallback) {
+        try {
+            String saved = prefs.getString(key, fallback);
+            return saved == null ? fallback : saved;
+        } catch (ClassCastException invalidPreference) {
+            return fallback;
+        }
+    }
+
+    static int readInt(SharedPreferences prefs, String key, int fallback) {
+        try {
+            return prefs.getInt(key, fallback);
+        } catch (ClassCastException invalidPreference) {
+            return fallback;
+        }
+    }
+
     static boolean showLog(SharedPreferences prefs) {
         if (SHOW_LOG.equals(pendingKey)) {
             return (boolean) previousValue;

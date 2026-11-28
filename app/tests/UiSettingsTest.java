@@ -23,6 +23,18 @@ public final class UiSettingsTest {
         check(!UiSettings.showLog(prefs), "malformed log setting should default off");
         check("obsolete".equals(saved.get("show_operation_log")), "reading should not rewrite settings");
 
+        saved.put("game", false);
+        saved.put("fixed_order_example", 17);
+        saved.put("sort_mode", "old-mode");
+        check("default".equals(UiSettings.readString(prefs, "game", "default")), "malformed tab fallback");
+        check(UiSettings.readString(prefs, "fixed_order_example", "").isEmpty(), "malformed order fallback");
+        check(MainActivity.readSortMode(prefs) == 0, "malformed sort mode fallback");
+        check("old-mode".equals(saved.get("sort_mode")), "reading should not rewrite malformed mode");
+        saved.put("sort_mode", 77);
+        check(MainActivity.readSortMode(prefs) == 0, "unknown integer sort mode fallback");
+        saved.put("sort_mode", 1);
+        check(MainActivity.readSortMode(prefs) == 1, "valid sort mode should remain fixed");
+
         check(UiSettings.setShowLog(prefs, true, main::add, success()), "log write not scheduled");
         Runnable showLog = take(main);
         check(!UiSettings.showLog(prefs), "pending write must not appear saved");
@@ -86,6 +98,7 @@ public final class UiSettingsTest {
                 new Class<?>[] {SharedPreferences.class}, (proxy, method, args) -> {
                     switch (method.getName()) {
                         case "getBoolean":
+                        case "getInt":
                         case "getString":
                             return saved.getOrDefault(args[0], args[1]);
                         case "edit":

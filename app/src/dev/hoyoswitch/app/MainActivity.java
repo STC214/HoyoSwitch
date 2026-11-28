@@ -138,11 +138,11 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         // Start on the tab the app was closed on; self tests then run against that game.
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        game = GameProfile.byPackage(prefs.getString(PREF_GAME, GameProfile.STARRAIL.pkg));
+        game = GameProfile.byPackage(UiSettings.readString(prefs, PREF_GAME, GameProfile.STARRAIL.pkg));
         if (state != null) {
             game = GameProfile.byPackage(state.getString("ui.game", game.pkg));
         }
-        sortMode = prefs.getInt(PREF_SORT, SORT_LAST_USED);
+        sortMode = readSortMode(prefs);
         loadFixedOrder();
         store = new SnapshotStore(this);
         setContentView(buildLayout());
@@ -844,8 +844,8 @@ public final class MainActivity extends Activity {
 
     private void loadFixedOrder() {
         fixedOrder.clear();
-        String raw = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_ORDER + game.pkg, "");
+        String raw = UiSettings.readString(getSharedPreferences(PREFS_NAME, MODE_PRIVATE),
+                PREF_ORDER + game.pkg, "");
         if (raw != null && !raw.isEmpty()) {
             for (String id : raw.split(",")) {
                 if (!id.isEmpty()) {
@@ -853,6 +853,11 @@ public final class MainActivity extends Activity {
                 }
             }
         }
+    }
+
+    static int readSortMode(SharedPreferences prefs) {
+        return UiSettings.readInt(prefs, PREF_SORT, SORT_LAST_USED) == SORT_FIXED
+                ? SORT_FIXED : SORT_LAST_USED;
     }
 
     private void saveFixedOrder(GameProfile selected) {
