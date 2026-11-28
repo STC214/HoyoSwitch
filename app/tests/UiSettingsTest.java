@@ -19,6 +19,9 @@ public final class UiSettingsTest {
         SharedPreferences prefs = reopen(saved);
         check(!UiSettings.showLog(prefs), "log should default off");
         check(UiSettings.floatingGame(prefs) == null, "legacy game alone must not enable overlay");
+        saved.put("show_operation_log", "obsolete");
+        check(!UiSettings.showLog(prefs), "malformed log setting should default off");
+        check("obsolete".equals(saved.get("show_operation_log")), "reading should not rewrite settings");
 
         check(UiSettings.setShowLog(prefs, true, main::add, success()), "log write not scheduled");
         Runnable showLog = take(main);

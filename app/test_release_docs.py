@@ -50,3 +50,14 @@ class ReleaseDocsTest(unittest.TestCase):
             data = path.read_bytes()
             match = re.search(rb'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]|\r(?!\n)', data)
             self.assertIsNone(match, f'{path.relative_to(ROOT)} contains a control character')
+
+    def test_install_docs_warn_about_password_data_loss_and_describe_migration(self):
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        install = readme.split('## 发布与安装\n', 1)[1].split('\n## ', 1)[0]
+        self.assertRegex(install, r'卸载或清除应用数据[^\n]*密码备注[^\n]*本地密钥')
+        app_doc, = (ROOT / 'docs' / 'app').glob('*.md')
+        migration = next(line for line in app_doc.read_text(encoding='utf-8').splitlines()
+                         if '**密码备注迁移**' in line)
+        for required in ('保存一次', '重新录入', '非空密码', '确认清除已保存的密码备注',
+                         '卸载或清除应用数据', '不等同于密码备份'):
+            self.assertIn(required, migration)

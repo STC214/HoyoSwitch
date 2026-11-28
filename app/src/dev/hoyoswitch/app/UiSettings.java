@@ -20,7 +20,14 @@ final class UiSettings {
     private UiSettings() {}
 
     static boolean showLog(SharedPreferences prefs) {
-        return SHOW_LOG.equals(pendingKey) ? (boolean) previousValue : prefs.getBoolean(SHOW_LOG, false);
+        if (SHOW_LOG.equals(pendingKey)) {
+            return (boolean) previousValue;
+        }
+        try {
+            return prefs.getBoolean(SHOW_LOG, false);
+        } catch (ClassCastException invalidPreference) {
+            return false;
+        }
     }
 
     static boolean setShowLog(SharedPreferences prefs, boolean visible, Executor main,
@@ -46,8 +53,15 @@ final class UiSettings {
     }
 
     private static String savedFloatingPackage(SharedPreferences prefs) {
-        return FLOATING_ENABLED_GAME.equals(pendingKey) ? (String) previousValue
-                : prefs.getString(FLOATING_ENABLED_GAME, null);
+        if (FLOATING_ENABLED_GAME.equals(pendingKey)) {
+            return (String) previousValue;
+        }
+        try {
+            return prefs.getString(FLOATING_ENABLED_GAME, null);
+        } catch (ClassCastException invalidPreference) {
+            // A restored/rewritten preference file must not crash the page on every resume.
+            return null;
+        }
     }
 
     static void addObserver(Consumer<Boolean> observer) {

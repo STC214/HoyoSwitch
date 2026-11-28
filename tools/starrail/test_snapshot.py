@@ -3,10 +3,14 @@
 Run from the repository root:  python -m unittest discover -s tools/starrail -p "test_*.py"
 """
 
+import base64
 import io
 import json
+import subprocess
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import device
@@ -289,10 +293,140 @@ class RestorePayloadTest(unittest.TestCase):
         self.assertEqual(state[path], verified)
 
 
+class RestoreInterruptTest(unittest.TestCase):
+    def test_interrupt_rolls_back_from_the_safety_snapshot(self):
+        db = snapshot.DATABASES[0]
+        journal = db + '-journal'
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
+        payload = {db: b'main', journal: b'journal'}
+        manifest = {'files': [dict(path=path, present=True, sha256=device.digest(data),
+                                   size=len(data), **metadata)
+                              for path, data in payload.items()]}
+        prefix = snapshot.DATA_DIR + '/'
+        state = {prefix + db: b'old main', prefix + journal: b'old journal'}
+        remote = mock.Mock()
+        remote.game_pids.return_value = []
+        remote.info.side_effect = lambda path: metadata if path in state else None
+        remote.read.side_effect = state.__getitem__
+        interrupted = []
+
+        def write(path, data):
+            if not interrupted:
+                interrupted.append(path)
+                raise KeyboardInterrupt()
+            state[path] = data
+
+        remote.write.side_effect = write
+
+        def local_path(record, relative):
+            return mock.Mock(read_bytes=mock.Mock(return_value=payload[relative]))
+
+        stderr = io.StringIO()
+        with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
+                mock.patch.object(snapshot, 'capture', return_value='safe-copy'), \
+                mock.patch.object(snapshot, 'local_path', side_effect=local_path), \
+                redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            with self.assertRaises(KeyboardInterrupt):
+                snapshot.restore(remote, mock.Mock(), True)
+        self.assertIn('rolling back from safety snapshot safe-copy', stderr.getvalue())
+        self.assertIn('rollback verified', stderr.getvalue())
+        self.assertEqual(state[prefix + db], payload[db])
+        self.assertEqual(state[prefix + journal], payload[journal])
+
+
+class RollbackExtrasTest(unittest.TestCase):
+    def test_rollback_removes_extra_sidecar_instead_of_claiming_success(self):
+        db = snapshot.DATABASES[0]
+        wal = db + '-wal'
+        metadata = dict(uid='1', gid='1', mode='600', context='ctx')
+        manifest = {'files': [dict(path=db, present=True, sha256=device.digest(b'main'),
+                                   size=4, **metadata),
+                              dict(path=wal, present=False)]}
+        prefix = snapshot.DATA_DIR + '/'
+        state = {prefix + db: b'main', prefix + wal: b'stale wal'}
+        removed = []
+        remote = mock.Mock()
+        remote.game_pids.return_value = []
+        remote.info.side_effect = lambda path: metadata if path in state else None
+        remote.read.side_effect = state.__getitem__
+
+        def root(script):
+            removed.append(script)
+            state.pop(prefix + wal, None)
+            return b''
+
+        remote.root.side_effect = root
+        local = mock.Mock(read_bytes=mock.Mock(return_value=b'main'))
+        with mock.patch.object(snapshot, 'load_manifest', return_value=manifest), \
+                mock.patch.object(snapshot, 'local_path', return_value=local), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(snapshot.restore(remote, mock.Mock(), True, _rollback=True), 0)
+        self.assertNotIn(prefix + wal, state)
+        self.assertTrue(any('rm -f' in script for script in removed))
+
+
+class CaptureStagingTest(unittest.TestCase):
+    def test_failed_capture_leaves_no_partial_record(self):
+        remote = mock.Mock()
+        remote.game_pids.return_value = []
+        remote.info.return_value = dict(uid='1', gid='1', mode='600', context='ctx',
+                                        size=3, mtime=0)
+        reads = []
+
+        def read(path):
+            reads.append(path)
+            if len(reads) > 2:
+                raise RuntimeError('adb dropped')
+            return b'abc'
+
+        remote.read.side_effect = read
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            with mock.patch.object(snapshot, 'STATE', state), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError):
+                    snapshot.capture(remote)
+            self.assertEqual(list(state.iterdir()), [])
+
+
+class DeviceTransportTest(unittest.TestCase):
+    def test_info_uses_shell_so_exit_three_means_missing(self):
+        remote = device.Device('fixture')
+        result = subprocess.CompletedProcess([], 3, b'', b'')
+        with mock.patch.object(device.subprocess, 'run', return_value=result) as spawn:
+            self.assertIsNone(remote.info('/missing'))
+        command = spawn.call_args.args[0]
+        self.assertEqual(command[:4], ['adb', '-s', 'fixture', 'shell'])
+        self.assertIn('su -c', command[-1])
+
+    def test_info_parses_metadata_from_shell_output(self):
+        remote = device.Device('fixture')
+        out = b'10300 10300 660 12 1795\n' + b'u:object_r:app_data_file:s0:c1 ctx\n'
+        result = subprocess.CompletedProcess([], 0, out, b'')
+        with mock.patch.object(device.subprocess, 'run', return_value=result):
+            info = remote.info('/p')
+        self.assertEqual(info['uid'], '10300')
+        self.assertEqual(info['size'], 12)
+        self.assertEqual(info['context'], 'u:object_r:app_data_file:s0:c1')
+
+    def test_read_uses_exec_out_and_detects_the_failure_marker(self):
+        remote = device.Device('fixture')
+        missing = subprocess.CompletedProcess([], 0, device.READ_FAILURE, b'')
+        with mock.patch.object(device.subprocess, 'run', return_value=missing) as spawn:
+            with self.assertRaises(RuntimeError):
+                remote.read('/missing')
+        self.assertEqual(spawn.call_args.args[0][:4], ['adb', '-s', 'fixture', 'exec-out'])
+
+    def test_root_uses_shell_so_failures_are_visible(self):
+        remote = device.Device('fixture')
+        failed = subprocess.CompletedProcess([], 3, b'', b'')
+        with mock.patch.object(device.subprocess, 'run', return_value=failed):
+            with self.assertRaises(RuntimeError):
+                remote.root('exit 3')
+
+
 class DeviceProcessTest(unittest.TestCase):
     def test_pidof_distinguishes_no_match_from_failed_probe(self):
-        import subprocess
-
         remote = device.Device('fixture')
         for code, stdout, stderr, expected in ((0, b'123 456\n', b'', '123 456'),
                                                (1, b'', b'', ''),
@@ -309,34 +443,27 @@ class DeviceProcessTest(unittest.TestCase):
                         self.assertEqual(remote.game_pids(), expected)
 
 
-class DeviceCleanupTest(unittest.TestCase):
-    def test_local_cleanup_runs_and_original_write_exception_survives(self):
+class DeviceWriteTest(unittest.TestCase):
+    def test_write_streams_base64_through_su_without_a_shared_temp_file(self):
         remote = device.Device('fixture')
-        failure = OSError('write failure')
-        remote._run = mock.Mock()
-        remote.root = mock.Mock(side_effect=[failure, RuntimeError('offline')])
-        with mock.patch.object(device.tempfile, 'NamedTemporaryFile',
-                               mock.mock_open()) as temp, \
-                mock.patch.object(device.os, 'unlink') as unlink, \
-                redirect_stderr(io.StringIO()):
-            temp.return_value.name = 'synthetic-local-file'
-            with self.assertRaises(OSError) as caught:
-                remote.write('/fixture', b'data')
-        self.assertIs(caught.exception, failure)
-        unlink.assert_called_once_with('synthetic-local-file')
+        payload = bytes(range(256)) * 2
+        result = subprocess.CompletedProcess([], 0, b'', b'')
+        with mock.patch.object(device.subprocess, 'run', return_value=result) as spawn:
+            remote.write('/data/user/0/com.miHoYo.hkrpg/editable.xml', payload)
+        command = spawn.call_args.args[0]
+        self.assertEqual(command[:3], ['adb', '-s', 'fixture'])
+        self.assertIn('su -c', command[-1])
+        self.assertIn('base64 -d >', command[-1])
+        self.assertNotIn('/data/local/tmp', ' '.join(command))
+        # Base64 carries 0x1A and CR safely; raw stdin would truncate the database.
+        self.assertEqual(base64.b64decode(spawn.call_args.kwargs['input']), payload)
 
-    def test_remote_cleanup_failure_after_success_is_reported(self):
+    def test_write_failure_surfaces_remote_stderr(self):
         remote = device.Device('fixture')
-        remote._run = mock.Mock()
-        remote.root = mock.Mock(side_effect=[None, RuntimeError('offline')])
-        with mock.patch.object(device.tempfile, 'NamedTemporaryFile',
-                               mock.mock_open()) as temp, \
-                mock.patch.object(device.os, 'unlink') as unlink, \
-                redirect_stderr(io.StringIO()):
-            temp.return_value.name = 'synthetic-local-file'
-            with self.assertRaisesRegex(RuntimeError, 'write completed'):
+        result = subprocess.CompletedProcess([], 1, b'', b'perm denied')
+        with mock.patch.object(device.subprocess, 'run', return_value=result):
+            with self.assertRaisesRegex(RuntimeError, 'perm denied'):
                 remote.write('/fixture', b'data')
-        unlink.assert_called_once_with('synthetic-local-file')
 
 
 if __name__ == '__main__':

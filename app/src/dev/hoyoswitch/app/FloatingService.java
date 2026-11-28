@@ -132,6 +132,12 @@ public final class FloatingService extends Service {
         super.onConfigurationChanged(configuration);
         if (button != null) {
             applyButtonTheme(button);
+            // The usable area may have shrunk (rotation, split screen): pull the button back so it
+            // stays reachable instead of being left off-screen with no way to drag it back.
+            clampPosition(button, params.x, params.y);
+            if (windowManager != null) {
+                windowManager.updateViewLayout(button, params);
+            }
         }
     }
 
@@ -178,6 +184,7 @@ public final class FloatingService extends Service {
         params.x = dp(16);
         params.y = dp(200);
 
+        view.setOnClickListener(v -> updateSnapshot());
         view.setOnTouchListener((touched, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -200,7 +207,8 @@ public final class FloatingService extends Service {
                     return true;
                 case MotionEvent.ACTION_UP:
                     if (!moving) {
-                        updateSnapshot();
+                        // Route through performClick so accessibility/keyboard activation works too.
+                        touched.performClick();
                     }
                     return true;
                 default:

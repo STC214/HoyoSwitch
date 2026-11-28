@@ -40,7 +40,15 @@ final class AppAppearance {
     }
 
     static Mode mode(Context context) {
-        return Mode.fromKey(preferences(context).getString(MODE_KEY, Mode.SYSTEM.key));
+        return readMode(preferences(context));
+    }
+
+    static Mode readMode(SharedPreferences prefs) {
+        try {
+            return Mode.fromKey(prefs.getString(MODE_KEY, Mode.SYSTEM.key));
+        } catch (ClassCastException invalidPreference) {
+            return Mode.SYSTEM;
+        }
     }
 
     static void select(Context context, Mode mode) {

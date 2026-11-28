@@ -116,10 +116,13 @@ final class SnapshotStore {
 
     private final File root;
     private final Context context;
+    private final LocalPasswordCrypto passwordCrypto;
 
     SnapshotStore(Context context) {
         this.context = context;
         root = new File(context.getFilesDir(), "snapshots");
+        passwordCrypto = new LocalPasswordCrypto(
+                new File(context.getFilesDir(), "password-notes.key").toPath());
         migrateLegacyLayout();
     }
 
@@ -128,30 +131,47 @@ final class SnapshotStore {
      * directory once, so older captures keep showing up in their game section.
      */
     private void migrateLegacyLayout() {
-        File[] children = root.listFiles();
-        if (children == null) {
-            return;
+        synchronized (LOCK) {
+            File[] children = root.listFiles();
+            if (children == null) {
+                return;
+            }
+            for (File child : children) {
+                if (!child.isDirectory() || !new File(child, MANIFEST).isFile()) {
+                    continue;
+                }
+                String pkg = GameProfile.STARRAIL.pkg;
+                try {
+                    JSONObject manifest = new JSONObject(new String(readLocal(new File(child, MANIFEST)),
+                            StandardCharsets.UTF_8));
+                    pkg = manifest.optString("package", pkg);
+                } catch (IOException | JSONException ignored) {
+                    // Fall back to the only game that had snapshots before the split.
+                }
+                if (!isKnownPackage(pkg)) {
+                    // A damaged manifest must never move a directory outside the snapshots root.
+                    Log.w("hoyoswitch", "skip legacy migration with unknown package: " + pkg);
+                    continue;
+                }
+                File destination = new File(new File(root, pkg), child.getName());
+                File parent = destination.getParentFile();
+                if (parent != null && (parent.isDirectory() || parent.mkdirs())
+                        && !destination.exists()) {
+                    if (!child.renameTo(destination)) {
+                        Log.w("hoyoswitch", "legacy snapshot move failed: " + child.getName());
+                    }
+                }
+            }
         }
-        for (File child : children) {
-            if (!child.isDirectory() || !new File(child, MANIFEST).isFile()) {
-                continue;
-            }
-            String pkg = GameProfile.STARRAIL.pkg;
-            try {
-                JSONObject manifest = new JSONObject(new String(readLocal(new File(child, MANIFEST)),
-                        StandardCharsets.UTF_8));
-                pkg = manifest.optString("package", pkg);
-            } catch (IOException | JSONException ignored) {
-                // Fall back to the only game that had snapshots before the split.
-            }
-            File destination = new File(new File(root, pkg), child.getName());
-            File parent = destination.getParentFile();
-            if (parent != null && (parent.isDirectory() || parent.mkdirs())
-                    && !destination.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                child.renameTo(destination);
+    }
+
+    private static boolean isKnownPackage(String pkg) {
+        for (GameProfile profile : GameProfile.ALL) {
+            if (profile.pkg.equals(pkg)) {
+                return true;
             }
         }
+        return false;
     }
 
     private File dirFor(GameProfile game) {
@@ -269,11 +289,18 @@ final class SnapshotStore {
                     }
                 }
             }
-            saveManifest(snapshot);
-            String afterMid = live ? currentMidOrEmpty(game) : null;
-            if (beforeMid != null && afterMid != null && !beforeMid.equals(afterMid)) {
-                throw new IOException("拍摄期间账号发生变化，已取消本次快照");
+            // Confirm the account before the manifest commits: a mixed capture must never become a
+            // valid snapshot, and a failed identity read must fail closed instead of skipping it.
+            if (live) {
+                String afterMid = currentMidOrEmpty(game);
+                if (beforeMid == null || afterMid == null) {
+                    throw new IOException("无法确认当前账号，已取消本次快照（请重试）");
+                }
+                if (!beforeMid.equals(afterMid)) {
+                    throw new IOException("拍摄期间账号发生变化，已取消本次快照");
+                }
             }
+            saveManifest(snapshot);
             complete = true;
         } catch (ExecutionException error) {
             Throwable cause = error.getCause();
@@ -292,13 +319,21 @@ final class SnapshotStore {
                 }
             }
             pool.shutdownNow();
+            boolean drained = false;
             try {
-                pool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+                drained = pool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
             }
             if (!complete) {
-                deleteRecursively(dir);
+                if (drained) {
+                    deleteRecursively(dir);
+                } else {
+                    // A worker stuck in root I/O could recreate files after the delete; leave the
+                    // manifest-less directory for cleanupLocked to reclaim instead of racing it.
+                    Log.w("hoyoswitch", "capture workers still running; deferring cleanup of "
+                            + dir.getName());
+                }
             }
         }
         Log.i("hoyoswitch", "capture " + snapshot.id + " took "
@@ -501,8 +536,9 @@ final class SnapshotStore {
             } catch (IOException error) {
                 recoveryError = "上次切换未恢复：" + error.getMessage();
             }
+            Map<String, String> dedupeMids = Collections.emptyMap();
             if (cleanUp && recoveryError.isEmpty()) {
-                cleanupLocked(game);
+                dedupeMids = cleanupLocked(game);
             }
             Current current = null;
             if (recoveryError.isEmpty()) {
@@ -518,7 +554,9 @@ final class SnapshotStore {
             Map<String, Boolean> readableById = new LinkedHashMap<>();
             for (Snapshot snapshot : snapshots) {
                 if (needsIdentity) {
-                    midById.put(snapshot.id, accountMid(snapshot));
+                    // Housekeeping already decrypted most of these; only read the rest again.
+                    String known = dedupeMids.get(snapshot.id);
+                    midById.put(snapshot.id, known != null ? known : accountMid(snapshot));
                 }
                 readableById.put(snapshot.id, decryptable(snapshot));
             }
@@ -590,11 +628,36 @@ final class SnapshotStore {
         }
         // Games without a combo widget identify the account from the token prefs key.
         if (game.accountDb != null) {
-            String dbPath = game.path(game.accountDb);
-            byte[] db = readDevice(dbPath);
+            List<String> group = new ArrayList<>();
+            group.add(game.accountDb);
+            for (String suffix : new String[]{"-journal", "-wal", "-shm"}) {
+                if (game.files.contains(game.accountDb + suffix)) {
+                    group.add(game.accountDb + suffix);
+                }
+            }
+            boolean live = true;
+            try {
+                // Only the game writing can checkpoint the DB mid-read; when it is stopped a
+                // single pass is enough and saves up to 300 ms per detection.
+                live = game.isRunning();
+            } catch (IOException ignored) {
+                // Unknown: assume it may write and take the stable path.
+            }
+            // Framed, optionally two-pass read: a checkpoint landing between the main file and its
+            // sidecars must not make an older account look current. If a running game keeps
+            // writing, fall back to one framed pass instead of reporting "unknown" every refresh.
+            Map<String, byte[]> read;
+            try {
+                read = readDbGroup(game, group, live);
+            } catch (IOException unstable) {
+                read = readDbGroup(game, group, false);
+            }
+            byte[] db = read.get(game.accountDb);
             if (db != null) {
-                List<String> candidates = dbCandidateMids(db, readDevice(dbPath + "-journal"),
-                        readDevice(dbPath + "-wal"), readDevice(dbPath + "-shm"));
+                List<String> candidates = dbCandidateMids(db,
+                        read.get(game.accountDb + "-journal"),
+                        read.get(game.accountDb + "-wal"),
+                        read.get(game.accountDb + "-shm"));
                 // A deleted account leaves no token, so the byte-scan fallback must not report a
                 // remnant that no longer has a live token; keep scanning to the next candidate.
                 for (String candidate : candidates) {
@@ -658,7 +721,11 @@ final class SnapshotStore {
     private String readAccountMid(Snapshot snapshot) throws IOException {
         GameProfile game = snapshot.game;
         if (game.accountDb != null) {
-            try {
+            Entry dbEntry = snapshot.entry(game.accountDb);
+            if (dbEntry != null && dbEntry.present) {
+                // A present database must be readable: a corrupted payload or sidecar is a broken
+                // card, and guessing from an older token key would misattribute it. Throwing lets
+                // accountMid report "" and dedupeAccounts keep the card untouched.
                 List<String> candidates = dbCandidateMids(readSnapshot(snapshot, game.accountDb),
                         snapshotBytes(snapshot, game.accountDb + "-journal"),
                         snapshotBytes(snapshot, game.accountDb + "-wal"),
@@ -672,9 +739,8 @@ final class SnapshotStore {
                 }
                 // The DB was readable but has no live account: do not trust stale token keys.
                 return "";
-            } catch (IOException ignored) {
-                // Fall through to the token key only when the DB could not be read.
             }
+            // No database in this snapshot: fall through to the token key below.
         }
         if (game.tokenPrefs != null) {
             Entry tokenEntry = snapshot.entry(game.tokenPrefs);
@@ -732,20 +798,28 @@ final class SnapshotStore {
             writeIfPresent(new File(dir, "account.db-shm"), shm);
             SQLiteDatabase database = SQLiteDatabase.openDatabase(main.getPath(), null,
                     SQLiteDatabase.OPEN_READONLY);
+            List<String> rows = new ArrayList<>();
             try (Cursor cursor = database.rawQuery(
-                    "SELECT mid FROM porte_account_table ORDER BY timestamp DESC LIMIT 1", null)) {
-                queried = true;
-                if (cursor.moveToFirst()) {
+                    "SELECT mid FROM porte_account_table ORDER BY timestamp DESC", null)) {
+                while (cursor.moveToNext()) {
                     String mid = cursor.getString(0);
-                    if (mid != null && !mid.isEmpty()) {
-                        return Collections.singletonList(mid);
+                    // Return every candidate (newest first): the caller skips rows without a live
+                    // token, exactly like the byte-scan fallback does.
+                    if (mid != null && !mid.isEmpty() && !rows.contains(mid)) {
+                        rows.add(mid);
                     }
                 }
-                // Query succeeded with zero rows: the table is genuinely empty.
-                return Collections.emptyList();
+                // Only after a complete read is the table known to be empty (or to hold rows);
+                // a failure while reading must fall back to the byte scan instead.
+                queried = true;
             } finally {
                 database.close();
             }
+            if (!rows.isEmpty()) {
+                return rows;
+            }
+            // Query succeeded with zero rows: the table is genuinely empty.
+            return Collections.emptyList();
         } catch (Exception error) {
             Log.w("hoyoswitch", "sqlite account scan failed: " + error);
         } finally {
@@ -754,7 +828,7 @@ final class SnapshotStore {
         // queried == true means the table was genuinely empty (returned above). Otherwise SQLite
         // could not read the file (Android's SQLite only supports UTF-8; these account DBs are
         // UTF-16), so scan the raw bytes; the caller filters them against a live token.
-        return queried ? Collections.<String>emptyList() : regexMid(db);
+        return queried ? Collections.<String>emptyList() : regexMids(db, wal, journal);
     }
 
     private static void writeIfPresent(File file, byte[] data) throws IOException {
@@ -763,7 +837,7 @@ final class SnapshotStore {
         }
     }
 
-    private static List<String> regexMid(byte[] db) {
+    private static List<String> regexMids(byte[] db, byte[]... extras) {
         // SQLite's text encoding lives at offset 56-59 (1=UTF-8, 2=UTF-16LE, 3=UTF-16BE); the BOM
         // at the start of the header is a fallback. Android's SQLite cannot open UTF-16 databases,
         // so fall back to a byte-level scan of the account row.
@@ -775,56 +849,67 @@ final class SnapshotStore {
                 || (db.length >= 2 && db[0] == (byte) 0xFF && db[1] == (byte) 0xFE);
         boolean be = encoding == 3
                 || (db.length >= 2 && db[0] == (byte) 0xFE && db[1] == (byte) 0xFF);
-        return scanRows(db, le, be);
+        List<byte[]> sources = new ArrayList<>();
+        sources.add(db);
+        // The newest account row may live only in the write-ahead log (or a hot rollback journal);
+        // scanning just the main file would report an older account as current.
+        for (byte[] extra : extras) {
+            if (extra != null && extra.length > 0) {
+                sources.add(extra);
+            }
+        }
+        return scanRows(sources, le, be);
     }
 
     /**
-     * Scans the raw bytes for {@code <mid>_mhy<digits...><13-digit timestamp>} without assuming any
+     * Scans raw bytes for {@code <mid>_mhy<digits...><13-digit timestamp>} without assuming any
      * 2-byte alignment, so records stored at odd offsets are still found. Returns the distinct mids
      * ordered by descending timestamp (so the newest is first), or an empty list when none is found.
      */
-    private static List<String> scanRows(byte[] db, boolean le, boolean be) {
+    private static List<String> scanRows(List<byte[]> sources, boolean le, boolean be) {
         byte[] needle = le ? new byte[]{'_', 0, 'm', 0, 'h', 0, 'y', 0}
                 : be ? new byte[]{0, '_', 0, 'm', 0, 'h', 0, 'y'}
                 : new byte[]{'_', 'm', 'h', 'y'};
         int step = (le || be) ? 2 : 1;
         Map<String, Long> byMid = new LinkedHashMap<>();
-        int index = indexOf(db, needle, 0);
-        while (index >= 0) {
-            StringBuilder mid = new StringBuilder("_mhy");
-            int p = index - step;
-            while (p >= 0) {
-                char c = charAt(db, p, le, be);
-                if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '_') {
-                    mid.insert(0, c);
-                    p -= step;
-                } else {
-                    break;
-                }
-            }
-            StringBuilder digits = new StringBuilder();
-            int q = index + needle.length;
-            while (q + (le || be ? 1 : 0) < db.length) {
-                char c = charAt(db, q, le, be);
-                if (c >= '0' && c <= '9') {
-                    digits.append(c);
-                    q += step;
-                } else {
-                    break;
-                }
-            }
-            if (digits.length() >= 13) {
-                try {
-                    long timestamp = Long.parseLong(digits.substring(digits.length() - 13));
-                    Long previous = byMid.get(mid.toString());
-                    if (previous == null || timestamp > previous) {
-                        byMid.put(mid.toString(), timestamp);
+        for (byte[] db : sources) {
+            int index = indexOf(db, needle, 0);
+            while (index >= 0) {
+                StringBuilder mid = new StringBuilder("_mhy");
+                int p = index - step;
+                while (p >= 0) {
+                    char c = charAt(db, p, le, be);
+                    if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '_') {
+                        mid.insert(0, c);
+                        p -= step;
+                    } else {
+                        break;
                     }
-                } catch (NumberFormatException ignored) {
-                    // Skip malformed digits.
                 }
+                StringBuilder digits = new StringBuilder();
+                int q = index + needle.length;
+                while (q + (le || be ? 1 : 0) < db.length) {
+                    char c = charAt(db, q, le, be);
+                    if (c >= '0' && c <= '9') {
+                        digits.append(c);
+                        q += step;
+                    } else {
+                        break;
+                    }
+                }
+                if (digits.length() >= 13) {
+                    try {
+                        long timestamp = Long.parseLong(digits.substring(digits.length() - 13));
+                        Long previous = byMid.get(mid.toString());
+                        if (previous == null || timestamp > previous) {
+                            byMid.put(mid.toString(), timestamp);
+                        }
+                    } catch (NumberFormatException ignored) {
+                        // Skip malformed digits.
+                    }
+                }
+                index = indexOf(db, needle, index + 1);
             }
-            index = indexOf(db, needle, index + 1);
         }
         List<Map.Entry<String, Long>> entries = new ArrayList<>(byMid.entrySet());
         entries.sort((left, right) -> Long.compare(right.getValue(), left.getValue()));
@@ -858,36 +943,34 @@ final class SnapshotStore {
         return (char) (((db[p] & 0xFF) << 8) | (db[p + 1] & 0xFF));
     }
 
-    private byte[] snapshotBytes(Snapshot snapshot, String relative) {
+    private byte[] snapshotBytes(Snapshot snapshot, String relative) throws IOException {
         Entry entry = snapshot.entry(relative);
         if (entry == null || !entry.present) {
             return null;
         }
-        try {
-            return readSnapshot(snapshot, relative);
-        } catch (IOException error) {
-            return null;
-        }
+        // A present sidecar that cannot be read must fail the whole identity read (fail closed).
+        return readSnapshot(snapshot, relative);
     }
 
     /** Genshin stores one token per account under {@code <mid>_mhy_porte_cookie_token_key}. */
     private static String tokenMid(byte[] xml) {
         String text = new String(xml, StandardCharsets.UTF_8);
-        int suffix = text.indexOf("_mhy_porte_cookie_token_key");
-        if (suffix <= 0) {
-            return "";
+        String needle = "_mhy_porte_cookie_token_key";
+        java.util.LinkedHashSet<String> mids = new java.util.LinkedHashSet<>();
+        int suffix = text.indexOf(needle);
+        while (suffix > 0) {
+            int nameStart = text.lastIndexOf("name=\"", suffix);
+            if (nameStart >= 0) {
+                String name = text.substring(nameStart + "name=\"".length(), suffix).trim();
+                if (!name.isEmpty()) {
+                    mids.add(name + "_mhy");
+                }
+            }
+            suffix = text.indexOf(needle, suffix + 1);
         }
-        int nameStart = text.lastIndexOf("name=\"", suffix);
-        if (nameStart < 0) {
-            return "";
-        }
-        String name = text.substring(nameStart + "name=\"".length(), suffix);
-        int quote = name.indexOf('"');
-        if (quote >= 0) {
-            name = name.substring(0, quote);
-        }
-        // The key is "<mid>_mhy_porte_cookie_token_key", so the token's mid ends with "_mhy".
-        return name.trim() + "_mhy";
+        // Several token keys mean the current account cannot be told apart; report unknown rather
+        // than attributing the device state to whichever key happens to come first.
+        return mids.size() == 1 ? mids.iterator().next() : "";
     }
 
     /** True when {@code xml} holds a token key for {@code mid}. */
@@ -948,8 +1031,9 @@ final class SnapshotStore {
         Snapshot current = reload(target);
         if (expectedMid != null) {
             String before = currentMidOrEmpty(game);
-            if (before != null && !before.equals(expectedMid)) {
-                throw new IOException("当前账号已变化，未更新该快照");
+            if (before == null || !before.equals(expectedMid)) {
+                // Fail closed: an unreadable identity must not let a wrong-account overwrite pass.
+                throw new IOException("当前账号已变化或无法确认，未更新该快照");
             }
         }
         File base = dirFor(game);
@@ -960,8 +1044,8 @@ final class SnapshotStore {
         try {
             if (expectedMid != null) {
                 String after = currentMidOrEmpty(game);
-                if (after != null && !after.equals(expectedMid)) {
-                    throw new IOException("拍摄期间账号发生变化，已取消本次更新");
+                if (after == null || !after.equals(expectedMid)) {
+                    throw new IOException("拍摄期间账号发生变化或无法确认，已取消本次更新");
                 }
             }
             Snapshot refreshed = readManifest(game, temp);
@@ -1048,10 +1132,10 @@ final class SnapshotStore {
         }
     }
 
-    private void cleanupLocked(GameProfile game) {
+    private Map<String, String> cleanupLocked(GameProfile game) {
         File base = dirFor(game);
         if (PendingSwitch.exists(base) || !recoverSwaps(base)) {
-            return; // No housekeeping may remove a directory still referenced by a swap.
+            return Collections.emptyMap(); // No housekeeping may remove a directory still in a swap.
         }
         deleteRecursively(new File(base, SnapshotSwap.STAGING));
         File[] children = base.listFiles();
@@ -1067,16 +1151,18 @@ final class SnapshotStore {
                 }
             }
         }
-        dedupeAccounts(game);
+        Map<String, String> mids = dedupeAccounts(game);
         pruneNamed(game, "回滚自检基线", 1);
         pruneNamed(game, "切换前自动备份", 2);
+        return mids;
     }
 
     /**
      * One card per account: keeps the newest snapshot of each account id and folds older ones into
-     * its history, so nothing is lost while the list stops growing duplicates.
+     * its history (which retains the newest versions), so the list stops growing duplicates while
+     * the kept card inherits the account/password note of the merged one.
      */
-    void dedupeAccounts(GameProfile game) {
+    Map<String, String> dedupeAccounts(GameProfile game) {
         List<Snapshot> snapshots = list(game);
         Map<String, Snapshot> keepByAccount = new LinkedHashMap<>();
         File historyDir = new File(dirFor(game), HISTORY);
@@ -1122,6 +1208,12 @@ final class SnapshotStore {
                 renameSafely(primary, primary.id);
             }
         }
+        // Hand the already-decrypted identities back so the refresh pass need not read them again.
+        Map<String, String> mids = new LinkedHashMap<>();
+        for (Map.Entry<String, Snapshot> entry : keepByAccount.entrySet()) {
+            mids.put(entry.getValue().id, entry.getKey());
+        }
+        return mids;
     }
 
     private void renameSafely(Snapshot snapshot, String name) {
@@ -1148,6 +1240,8 @@ final class SnapshotStore {
         if (!duplicate.dir.renameTo(destination)) {
             return false;
         }
+        // Retention keeps the newest HISTORY_KEEP versions; an older merged card can fall outside
+        // that window, which is why the duplicate is folded rather than kept as a separate card.
         pruneHistory(historyDir, primary.id, null);
         return true;
     }
@@ -1256,17 +1350,19 @@ final class SnapshotStore {
 
     /** Archived versions of one snapshot, newest first. */
     List<HistoryEntry> history(Snapshot snapshot) {
-        List<HistoryEntry> entries = new ArrayList<>();
-        File history = new File(snapshot.dir.getParentFile(), HISTORY);
-        SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
-        for (File version : historyVersions(history, snapshot.id)) {
-            HistoryEntry entry = new HistoryEntry();
-            entry.dir = version;
-            entry.time = historyTime(version, snapshot.id);
-            entry.label = format.format(new Date(entry.time));
-            entries.add(entry);
+        synchronized (LOCK) {
+            List<HistoryEntry> entries = new ArrayList<>();
+            File history = new File(snapshot.dir.getParentFile(), HISTORY);
+            SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA);
+            for (File version : historyVersions(history, snapshot.id)) {
+                HistoryEntry entry = new HistoryEntry();
+                entry.dir = version;
+                entry.time = historyTime(version, snapshot.id);
+                entry.label = format.format(new Date(entry.time));
+                entries.add(entry);
+            }
+            return entries;
         }
-        return entries;
     }
 
     void rename(Snapshot snapshot, String name) throws IOException {
@@ -1279,6 +1375,10 @@ final class SnapshotStore {
         String cleaned = name == null ? "" : name.trim();
         if (cleaned.isEmpty()) {
             throw new IOException("名称不能为空");
+        }
+        if (isSessionName(cleaned)) {
+            // These names are pruned automatically; a user card must never be deleted by that sweep.
+            throw new IOException("该名称由应用保留，请换一个名称");
         }
         Snapshot fresh = reload(snapshot);
         fresh.name = cleaned;
@@ -1306,23 +1406,31 @@ final class SnapshotStore {
         target.entries.putAll(fresh.entries);
     }
 
-    /** Stores the card's account name and password; the password is Keystore-encrypted. */
-    void setCredentials(Snapshot snapshot, String loginName, String password) throws IOException {
+    /** Stores the card's account name and password using the app-local password key. */
+    void setCredentials(Snapshot snapshot, String previousAccount, String previousCiphertext,
+                        String loginName, String password) throws IOException {
         synchronized (LOCK) {
-            setCredentialsLocked(snapshot, loginName, password);
+            setCredentialsLocked(snapshot, previousAccount, previousCiphertext, loginName, password);
         }
     }
 
-    private void setCredentialsLocked(Snapshot snapshot, String loginName, String password)
+    private void setCredentialsLocked(Snapshot snapshot, String previousAccount,
+                                      String previousCiphertext, String loginName, String password)
             throws IOException {
         Snapshot fresh = reload(snapshot);
+        if (!fresh.loginName.equals(previousAccount) || !fresh.passwordEnc.equals(previousCiphertext)) {
+            throw new IOException("账号密码已被更新，请重新打开编辑页面");
+        }
         fresh.loginName = loginName == null ? "" : loginName.trim();
         if (password == null || password.isEmpty()) {
             fresh.passwordEnc = "";
         } else {
-            fresh.passwordEnc = Base64.encodeToString(
-                    SnapshotCrypto.encrypt(password.getBytes(StandardCharsets.UTF_8)),
-                    Base64.NO_WRAP);
+            byte[] plain = password.getBytes(StandardCharsets.UTF_8);
+            try {
+                fresh.passwordEnc = Base64.encodeToString(passwordCrypto.encrypt(plain), Base64.NO_WRAP);
+            } finally {
+                Arrays.fill(plain, (byte) 0);
+            }
         }
         saveManifest(fresh);
         adopt(snapshot, fresh);
@@ -1330,12 +1438,22 @@ final class SnapshotStore {
 
     /** Decrypts the stored password; empty when none was saved. */
     String password(Snapshot snapshot) throws IOException {
-        if (snapshot.passwordEnc.isEmpty()) {
+        return decodePassword(snapshot.passwordEnc);
+    }
+
+    String decodePassword(String ciphertext) throws IOException {
+        if (ciphertext.isEmpty()) {
             return "";
         }
         try {
-            byte[] raw = Base64.decode(snapshot.passwordEnc, Base64.NO_WRAP);
-            return new String(SnapshotCrypto.decrypt(raw), StandardCharsets.UTF_8);
+            byte[] raw = Base64.decode(ciphertext, Base64.NO_WRAP);
+            byte[] plain = LocalPasswordCrypto.matches(raw)
+                    ? passwordCrypto.decrypt(raw) : SnapshotCrypto.decrypt(raw);
+            try {
+                return new String(plain, StandardCharsets.UTF_8);
+            } finally {
+                Arrays.fill(plain, (byte) 0);
+            }
         } catch (IllegalArgumentException error) {
             throw new IOException("密码数据已损坏", error);
         }
@@ -1416,7 +1534,8 @@ final class SnapshotStore {
         Snapshot existing = current.loggedIn && !current.mid.isEmpty()
                 ? findByAccount(game, current.mid) : null;
         if (existing != null) {
-            updateSnapshot(existing);
+            // Bind to the detected account so a switch between detection and capture fails closed.
+            updateSnapshotLocked(existing, current.mid);
             progress.report("已更新当前账号快照: " + existing.name);
             return existing.id;
         }
@@ -1440,12 +1559,21 @@ final class SnapshotStore {
      */
     String captureAccount(GameProfile game, String name) throws IOException {
         synchronized (LOCK) {
-            Snapshot existing = currentAccount(game);
+            String cleaned = name == null ? "" : name.trim();
+            if (isSessionName(cleaned)) {
+                // Same reserved names that renameLocked rejects; otherwise cleanup would prune it.
+                throw new IOException("该名称由应用保留，请换一个名称");
+            }
+            Current current = detectCurrentLocked(game);
+            Snapshot existing = current.loggedIn && !current.mid.isEmpty()
+                    ? findByAccount(game, current.mid) : null;
             if (existing == null) {
                 return captureLocked(game, name);
             }
-            updateSnapshotLocked(existing, null);
-            if (name != null && !name.trim().isEmpty()) {
+            // Bind the write to the account identified a moment ago, so a switch in between fails
+            // instead of overwriting this card with somebody else's state.
+            updateSnapshotLocked(existing, current.mid);
+            if (!cleaned.isEmpty()) {
                 renameLocked(existing, name);
             }
             return existing.id;
@@ -1503,10 +1631,11 @@ final class SnapshotStore {
                 readSnapshot(snapshot, relative);
                 return true;
             } catch (IOException error) {
-                return false;
+                // One broken payload must not hide the others: keep trying, and only report the
+                // card unreadable when every present payload fails.
             }
         }
-        return true;
+        return false;
     }
 
     private Snapshot findByAccount(GameProfile game, String mid) {
@@ -1672,7 +1801,8 @@ final class SnapshotStore {
                 }
             }
             PendingSwitch.commit(base);
-        } catch (IOException failure) {
+        } catch (Throwable failure) {
+            // Any failure after PendingSwitch.begin must roll back, not just checked IO errors.
             String suffix;
             try {
                 recoverPendingSwitch(game, progress);
@@ -1964,6 +2094,11 @@ final class SnapshotStore {
             JSONObject item = files.getJSONObject(index);
             Entry entry = new Entry();
             entry.path = item.getString("path");
+            if (!isSafeRelative(entry.path)) {
+                // Paths drive root-level reads/writes and deletes; a manifest must never escape
+                // the game's own file list into arbitrary device paths.
+                throw new IOException("快照清单文件路径非法: " + entry.path);
+            }
             entry.present = item.getBoolean("present");
             entry.size = item.optLong("size");
             entry.sha256 = item.optString("sha256");
@@ -1975,6 +2110,19 @@ final class SnapshotStore {
             snapshot.entries.put(entry.path, entry);
         }
         return snapshot;
+    }
+
+    /** A manifest path must stay a plain relative path inside the snapshot payload tree. */
+    private static boolean isSafeRelative(String relative) {
+        if (relative == null || relative.isEmpty() || relative.startsWith("/")) {
+            return false;
+        }
+        for (String part : relative.split("/")) {
+            if (part.isEmpty() || ".".equals(part) || "..".equals(part)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     interface Progress {

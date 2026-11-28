@@ -14,8 +14,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +27,10 @@ from device import DATA_DIR, Device, digest
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / 'account-snapshots' / 'state'
 MANIFEST = 'manifest.json'
+
+
+class RestoreAbort(RuntimeError):
+    """A restore could not be completed; the device may hold a partial write."""
 
 PREFS = [
     'shared_prefs/porte_sdk_account_PRODUCT.xml',
@@ -118,33 +125,49 @@ def capture(device, record=None):
         while record.exists():
             suffix += 1
             record = STATE / f'{stamp}-{suffix}'
-    record.mkdir(parents=True, exist_ok=False)
-    entries = []
-    for rel in TARGETS:
-        path = f'{DATA_DIR}/{rel}'
-        info = device.info(path)
-        if info is None:
-            entries.append(dict(path=rel, present=False))
-            continue
-        data = device.read(path)
-        if digest(data) != digest(device.read(path)):
-            raise RuntimeError(f'{path}: device content changed during capture')
-        target = local_path(record, rel)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        if digest(target.read_bytes()) != digest(data):
-            raise RuntimeError(f'{target}: local copy does not match the device content')
-        if info['size'] != len(data):
-            raise RuntimeError(f'{path}: stat size {info["size"]} differs from read size {len(data)}')
-        entries.append(dict(path=rel, present=True, sha256=digest(data), **info))
-        print(f'{rel:52} {len(data):>7} B  {digest(data)[:12]}  {info["uid"]}:{info["gid"]} {info["mode"]}')
-    for rel in [entry['path'] for entry in entries if not entry['present']]:
-        print(f'{rel:52}   absent')
-    save_manifest(record, dict(
-        tool='snapshot', version=1,
-        captured_at=datetime.now(timezone.utc).isoformat(),
-        serial=device.serial, data_dir=DATA_DIR, game_stopped=True, files=entries,
-    ))
+    if record.exists():
+        raise FileExistsError(f'snapshot record already exists: {record}')
+    # Write into a unique staging directory and rename on success: a failed capture must never
+    # leave a manifest-less half snapshot, and two concurrent captures must not share staging.
+    record.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=record.name + '.partial-', dir=record.parent))
+    try:
+        entries = []
+        for rel in TARGETS:
+            path = f'{DATA_DIR}/{rel}'
+            info = device.info(path)
+            if info is None:
+                entries.append(dict(path=rel, present=False))
+                continue
+            data = device.read(path)
+            if digest(data) != digest(device.read(path)):
+                raise RuntimeError(f'{path}: device content changed during capture')
+            target = local_path(staging, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            if digest(target.read_bytes()) != digest(data):
+                raise RuntimeError(f'{target}: local copy does not match the device content')
+            if info['size'] != len(data):
+                raise RuntimeError(f'{path}: stat size {info["size"]} differs from read size {len(data)}')
+            entries.append(dict(path=rel, present=True, sha256=digest(data), **info))
+            print(f'{rel:52} {len(data):>7} B  {digest(data)[:12]}  {info["uid"]}:{info["gid"]} {info["mode"]}')
+        for rel in [entry['path'] for entry in entries if not entry['present']]:
+            print(f'{rel:52}   absent')
+        if not any(entry['present'] for entry in entries):
+            # A wrong --serial or an uninstalled game must not produce an "empty but valid" record.
+            raise RuntimeError(f'{device.serial}: none of the {len(entries)} targets exist under '
+                               f'{DATA_DIR}; is the game installed on this device?')
+        if device.game_pids():
+            raise RuntimeError(f'{device.serial}: {DATA_DIR} is in use, stop the game first')
+        save_manifest(staging, dict(
+            tool='snapshot', version=1,
+            captured_at=datetime.now(timezone.utc).isoformat(),
+            serial=device.serial, data_dir=DATA_DIR, game_stopped=True, files=entries,
+        ))
+        staging.rename(record)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     present = sum(1 for entry in entries if entry['present'])
     print(f'snapshot={record} files={present}/{len(entries)}')
     print(f'restore: python tools/starrail/snapshot.py --serial {device.serial} restore --record "{record}" --apply')
@@ -250,8 +273,12 @@ def inspect_local(record, manifest, retain=()):
     return problems, prepared
 
 
-def restore(device, record, apply, only=()):
+def restore(device, record, apply, only=(), _rollback=False):
     manifest = load_manifest(record)
+    recorded = manifest.get('serial')
+    if recorded and recorded != device.serial:
+        print(f'warning: snapshot was captured on device {recorded}, restoring to {device.serial}',
+              file=sys.stderr)
     entries = select(manifest['files'], only)
     wanted = {entry['path'] for entry in entries}
     problems, prepared = inspect_local(record, manifest, wanted if apply else ())
@@ -260,39 +287,87 @@ def restore(device, record, apply, only=()):
             print(f'{line}', file=sys.stderr)
         print('snapshot is damaged; refusing to restore', file=sys.stderr)
         return 1
-    if device.game_pids():
+    if not _rollback and device.game_pids():
+        # A rollback must not be blocked by a game that started after the safety capture: leaving
+        # the mixed state is worse than overwriting while it runs.
         print(f'{device.serial}: {DATA_DIR} is in use, stop the game first', file=sys.stderr)
         return 1
     rows = remote_state(device, manifest, wanted)
     differing = show(rows)
-    stale = sidecar_issues(device, manifest, wanted)
-    if stale:
-        # Refuse before any write: applying the main file while a stale WAL remains would leave
-        # a mixed state (new main + old WAL).
-        print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
-        return 1
-    if not differing:
+    # A rollback must also remove files the safety snapshot says were absent, otherwise a stale
+    # sidecar survives and "already matches" would falsely report a clean rollback.
+    extras = [row for row in rows if row[1] == 'extra']
+    if not _rollback:
+        stale = sidecar_issues(device, manifest, wanted)
+        if stale:
+            # Refuse before any write: applying the main file while a stale WAL remains would leave
+            # a mixed state (new main + old WAL). A rollback intentionally overwrites a mixed state.
+            print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
+            return 1
+    if not differing and not (_rollback and extras):
         print('device already matches the snapshot; nothing to restore')
         return 0
     if not apply:
         print('dry run; add --apply to restore')
         return 0
-    safety = capture(device)
+    safety = None if _rollback else capture(device)
+    try:
+        return _apply_restore(device, manifest, entries, prepared, wanted, safety, only,
+                              remove_extras=_rollback)
+    except RestoreAbort as abort:
+        print(str(abort), file=sys.stderr)
+        if not _rollback and safety is not None:
+            _rollback_from(device, safety)
+        return 1
+    except BaseException:
+        if _rollback or safety is None:
+            print('rollback failed: device may be in a mixed state', file=sys.stderr)
+            raise
+        # An interrupt (Ctrl+C, adb drop) between the main database and its sidecars would leave
+        # SQLite replaying a stale journal. Undo the partial write from the safety snapshot.
+        print(f'restore interrupted; rolling back from safety snapshot {safety}', file=sys.stderr)
+        _rollback_from(device, safety)
+        raise
+
+
+def _rollback_from(device, safety):
+    """Best effort: restore the pre-operation state, and say clearly when that failed."""
+    print(f'rolling back from safety snapshot {safety}', file=sys.stderr)
+    status = None
+    error = None
+    try:
+        status = restore(device, safety, True, _rollback=True)
+    except BaseException as rollback_error:
+        error = rollback_error
+    if status == 0:
+        print('rollback verified: device is back at the pre-restore state', file=sys.stderr)
+    elif error is not None:
+        print(f'ROLLBACK FAILED: device may be in a mixed state; safety snapshot {safety}: '
+              f'{error}', file=sys.stderr)
+    else:
+        print(f'ROLLBACK INCOMPLETE: safety snapshot {safety}', file=sys.stderr)
+
+
+def _apply_restore(device, manifest, entries, prepared, wanted, safety, only, remove_extras):
     written = skipped = 0
     for entry in entries:
-        if not entry['present']:
-            continue
         rel = entry['path']
         path = f'{DATA_DIR}/{rel}'
+        if not entry['present']:
+            if remove_extras and device.info(path) is not None:
+                # The safety snapshot recorded this file as absent: a rollback must delete the one
+                # the interrupted restore created (typically a fresh -wal/-journal).
+                device.root(f'rm -f {shlex.quote(path)}')
+                print(f'{rel}: removed (absent in the snapshot)')
+            continue
         data = prepared[rel]
         info = device.info(path)
         if info is not None and digest(device.read(path)) == entry['sha256']:
             if stable(info) != stable(entry):
                 device.set_metadata(path, entry['uid'], entry['gid'], entry['mode'], entry['context'])
                 if stable(device.info(path)) != stable(entry):
-                    print(f'{rel}: could not restore owner/mode/context; safety snapshot {safety}',
-                          file=sys.stderr)
-                    return 1
+                    raise RestoreAbort(
+                        f'{rel}: could not restore owner/mode/context; safety snapshot {safety}')
                 print(f'{rel}: owner/mode/context restored')
             skipped += 1
             continue
@@ -300,30 +375,28 @@ def restore(device, record, apply, only=()):
         written += 1
         after_info = device.info(path)
         if after_info is None:
-            print(f'{rel}: missing after write; safety snapshot {safety}', file=sys.stderr)
-            return 1
+            raise RestoreAbort(f'{rel}: missing after write; safety snapshot {safety}')
         after = device.read(path)
         if digest(after) != entry['sha256']:
-            print(f'{rel}: read-back does not match the snapshot; safety snapshot {safety}', file=sys.stderr)
-            return 1
+            print(f'{rel}: read-back does not match the snapshot; safety snapshot {safety}',
+                  file=sys.stderr)
+            raise RestoreAbort(f'{rel}: snapshot write was not verified; aborting restore')
         if stable(after_info) != stable(entry):
             device.set_metadata(path, entry['uid'], entry['gid'], entry['mode'], entry['context'])
             if stable(device.info(path)) != stable(entry):
                 print(f'{rel}: could not restore owner/mode/context; safety snapshot {safety}', file=sys.stderr)
-                return 1
+                raise RestoreAbort(f'{rel}: snapshot write was not verified; aborting restore')
             print(f'{rel}: owner/mode/context restored')
         print(f'{rel:52} written {len(data)} B  {entry["sha256"][:12]}')
     rows = remote_state(device, manifest, wanted)
     leftover = show(rows)
     stale = sidecar_issues(device, manifest, wanted, pending_writes=False)
     if stale:
-        print('database sidecar mismatch: ' + '; '.join(sorted(stale)), file=sys.stderr)
-        return 1
+        raise RestoreAbort('database sidecar mismatch: ' + '; '.join(sorted(stale)))
     print(f'written={written} skipped={skipped} safety_snapshot={safety} '
           f'scope={"selected" if only else "all"}')
     if leftover:
-        print('restore finished with differences; safety snapshot can undo it', file=sys.stderr)
-        return 1
+        raise RestoreAbort('restore finished with differences; safety snapshot can undo it')
     print('restore verified: every restored file matches the device')
     return 0
 

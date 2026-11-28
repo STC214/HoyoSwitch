@@ -1,11 +1,12 @@
 # 项目进度与续接记录
 
-文档同步日期：2026-11-21（Asia/Shanghai）。2026-11-18 起的快照、三方对比和各轮记录继续保留，不重复采集。项目文档放入 `docs/`，根目录保留 `README.md` 和 `AGENTS.md`。
+文档同步日期：2026-11-28（Asia/Shanghai）。2026-11-18 起的快照、三方对比和各轮记录继续保留，不重复采集。项目文档放入 `docs/`，根目录保留 `README.md` 和 `AGENTS.md`。
 
 **交接入口**：当前实现与后续安排见 [README](../README.md) 和 [App 说明](app/账号切换App原型.md)；各游戏点位报告保留对应版本的实测证据，下方各轮记录按发生时间保留。
 
 ## 发布与待发布状态
 
+- **v1.7.5：** 未发布（versionCode 65）。失效快照可保留卡片就地更新（名称/备注/账号密码/顺序不变，确认后用当前登录状态覆盖）；固定排序下新卡追加到最底部；切换确认框在页面重建时正确复位 `busy`；PC 工具区分 `adb shell`（可见退出码）与 `exec-out`（二进制读取）。验证边界：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto 等）与 debug/release 构建、证书指纹校验通过；真机验证 device 传输层四项探针与 `snapshot.py diff`，未重做真机切换或失效卡更新验证。
 - **v1.7.4：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.4)（versionCode 64）。快照卡片支持长按手柄拖动，换位后切到固定顺序，并按游戏保存。模拟器验证上下拖动、边缘滚动、取消拖放、重启保序及跨游戏隔离。
 - **v1.7.3：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.3)（versionCode 63）。操作日志和悬浮按钮记住开关状态；悬浮按钮在权限仍有效时随 App 恢复，并保留原游戏绑定。设置写入成功后才应用；尚未做真机强杀重启或撤销权限测试。
 - **v1.7.2：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.2)（versionCode 62）。账号卡片分开显示状态与操作，底部保留「账号与密码」直达入口；窄屏或大字体时按钮按可用宽度换行。包含 v1.7.1 的免费和免责声明文案更新。
@@ -332,3 +333,24 @@
 - 补充（14:20–14:30）：刷新链路与 PC 工具重构，发布 1.6.0。新增 `SnapshotStore.RefreshData` 与 `readRefreshData()` 统一后台读取；`MainActivity` 用 `displayedData`/`refreshInFlight`/`pageResumed` 管理刷新生命周期；`FloatingService` 增加快照观察者，悬浮更新后自动刷新对应分栏；PC 工具 `device.py` 写入改临时文件+push+清理、`sidecar_issues` 增 `pending_writes`。单测 33 通过，真机基本 UI 正常。
 
 - 补充（14:50–15:00）：加固（用户修复），发布 1.6.1。`GameProfile.launch()` 校验 `am start -W` 的 Status:ok；`SnapshotStore` 回滚前整组校验、属主/权限元数据校验、DB 分帧解析更严格；PC 工具 `snapshot.py` 的 `inspect_local` 保留恢复字节并校验本地副本。单测 34 通过。
+
+- 补充（审查轮 1）：多路只读审查后修复 SnapshotStore/MainActivity/FloatingService/RootShell/build.py 一批真实缺陷：① captureLocked 先校验账号后写 manifest，识别失败 fail-closed；② dbCandidateMids 的 queried 仅在完整读取后置位；③ 字节回退扫描 db+wal+journal；④ tokenMid 多 key 时返回未知；⑤ decryptable 不再因首个 xml 坏就误判、无负载判不可读；⑥ readManifest 校验条目路径不越界；⑦ rename 拒绝保留名；⑧ 进程级 busy + current，旋转后操作完成仍落到新页面；⑨ 失效卡更新受 cardActionsAvailable 约束；⑩ 密码错误弹窗改自绘并纳入 visibleDialog；⑪ 刷新失败提供页面内重试；⑫ 悬浮按钮配置变化后重新夹取；⑬ RootShell 超时关闭管道并带出部分输出；⑭ build.py 发布前校验证书指纹、失败自动清理中间产物；⑮ 文档更正密码备注加密方式（本地密钥而非 Keystore）。mergeHistory 保留策略经测试确认，改为修正注释而非改行为。待下一轮：snapshot.py 恢复事务性与半成品清理、device.py 明文中转。
+
+- 补充（审查轮 1 续）：device.py 写入改为经 adb shell 的 su -c "cat > path" 从 stdin 流式写入，不再把明文凭据中转 /data/local/tmp（真机验证二进制字节一致），并更新对应测试。剩余待修：snapshot.py 恢复事务性（主库与 WAL/journal 整组）与 capture 半成品目录清理。
+
+- 补充（审查轮 2）：① snapshot.py 恢复写入抽出 `_apply_restore`，异常/中断时从 safety 快照自动回滚（`_rollback=True` 防止递归），失败时明确提示可能处于混合状态；② capture 改为写 `<record>.partial` 暂存目录，成功后 rename，失败清理，避免残留无 manifest 的半成品；③ readRefreshData 复用 dedupeAccounts 已解出的 id→mid，去掉登录态下每卡重复解密/SQLite；④ 新增 3 个 Python 回归测试（中断回滚、capture 暂存清理、stdin 写入）。当前 44 项 starrail 测试、8 项 app 测试、SnapshotSafety/Reorder/CardActionWidths Java 回归均通过。
+
+- 补充（审查轮 2 续，复核修正）：复核发现上一步 device.py 走 `adb shell` 原始 stdin 在 Windows 是文本模式（0x1A 截断、CRLF 改写），会把数据库写坏。已改为 base64 经 stdin 远端 `base64 -d` 解码写入，真机用 0..255 全字节 1024B 验证字节完全一致；写坏风险消除。另：restore 的校验失败改为 `RestoreAbort` 并触发回滚；回滚模式跳过 sidecar 预检、并删除安全快照中记为「不存在」的多余文件；capture staging 改为唯一临时目录避免并发覆盖；RootShell 超时不再关闭 stdin（避免写线程监视器阻塞），并移除超时消息里的部分输出以免泄露凭据。当前：44 项 starrail + 8 项 app Python 测试、4 项 Java 回归（SnapshotSafety/Reorder/CardActionWidths/LocalPasswordCrypto）与 debug/release 构建全部通过。
+
+- 补充（审查轮 3，最终复核）：独立复核最新改动，确认 device.py base64 写入（含路径注入/二进制/trace）、capture 唯一暂存、回滚不递归、RootShell 超时、SnapshotStore dedupe 复用、build.py 证书校验均无回归；发现并修复 1 项真实缺陷：回滚路径在「只有 extra 文件差异」时提前返回并误报 rollback verified，导致残留旧 WAL/sidecar；现已把 extra 纳入回滚待处理项并新增回归测试。另加两项加固：设备缺 base64 时先探测再写（避免先截断目标文件）、写入失败信息回退到 stdout。最终：45 项 starrail + 8 项 app Python 测试、4 项 Java 回归、debug/release 构建与真机 0..255 全字节往返全部通过。
+
+- 补充（全量审查轮，三路独立只读审查）：修复 8 项真实缺陷：①【高】切换确认框在页面重建时被 dismiss() 而不触发 cancel 回调，静态 busy 永不复位导致整页死锁——showConfirm 改用 OnDismissListener + confirmed 标记，取消/重建/返回都只复位一次；② 刷新线程只捕 RuntimeException，Error 会让 refreshInFlight 永久卡 true——改捕 Throwable；③ 卡片菜单/切换排序/上下移动未受 busy 约束（输入被静默丢弃、按旧数据重排写坏 fixedOrder）——加门禁；④ history() 未取 LOCK，与后台 publish/prune 并发读到不一致列表——纳入 LOCK；⑤ 用户拍摄可用内部保留名建卡，随后被 pruneNamed 删除——captureAccount 增加保留名校验；⑥ captureAccount/snapshotCurrentAccount 更新卡片时传 null expectedMid，识别→采集窗口换号会写错卡——传当前 mid；⑦ dbCandidateMids 的 SQLite 分支只回最新一行，破坏「跳过无 token 候选」契约——返回全部候选；⑧ capture 失败清理忽略 awaitTermination，可能与仍在跑的 worker 竞争——未排空则交给 cleanupLocked；另修：manifest 路径校验补已知包名、present 边车读失败改为 fail-closed（readAccountMid/snapshotBytes）、SnapshotCrypto 校验 IV 长度、UiSettings 偏好类型异常防御、文档同步（失效卡行为/偏好键名/构建中间文件）。
+- 补充（全量审查轮，PC 工具 P1）：真机确认 `adb exec-out` 不回传退出码且把 stderr 并入 stdout，导致 Device.info 对不存在文件抛错、read 把 cat 错误文本当内容。已将控制流改走 `adb shell`（退出码可见），二进制读仍用 `exec-out` 并加缺失标记检测；新增 4 个传输层回归测试；真机验证 info/read/root/write 与 `snapshot.py diff` 恢复正常。当前 49 项 starrail + 15 项 app Python 测试、Java 回归（含 CredentialEdit/DialogWidth）与 debug/release 构建全部通过。
+
+- 补充（全量审查轮续）：新增 `LockableScrollView`，聚焦期间真正禁用账号区滚动（原 `setOnTouchListener` 只对空白区域生效，卡片上拖动仍会滚走焦点视图）；竖屏与横屏右列都换用该类，聚焦/解除时切换锁定；拖拽排序不受影响（拖拽时 `cardOpActive` 为 false）。已在真机安装 release 并确认页面、卡片、状态行正常。
+
+- 补充（第二次全量审查）：①【P2】上一轮 showConfirm 的 dismiss 修复被 showDialog 的 setOnDismissListener 覆盖，实际仍会卡死 bus——改为 DialogState（每对话框独立状态）+ showDialog 重载，取消/返回/重建只执行一次 cancel；②【P2】PC 工具回滚会被自身「游戏运行中」检查挡掉——回滚模式跳过该检查；capture 结束前复查 pid 并拒绝空快照；③【P2】device.write 改为两阶段（先解码到同名 .hsw-tmp，再 cat 覆盖目标），中断不再截断游戏数据库；④【P2】restore 对跨设备快照给出 serial 警告；⑤【P3】set_metadata 改 chown && chmod；⑥ 文档同步：Root 失败原因位置、卡片更新入口、卡片信息、账号密码入口、构建中间文件与证书校验范围、PROGRESS 增补 v1.7.5（未发布）条目并更新同步日期。真机复验 write 两阶段与 info/read；49 项 starrail + 15 项 app 测试通过。
+
+- 补充（第二次全量审查 续）：① history() 保留写锁但改到后台线程加载（避免主线程被 root I/O 卡住导致 ANR）；② switchToLocked 改为 catch Throwable，写入阶段的非受检异常也会触发回滚；③ 悬浮按钮补 OnClickListener 并在 ACTION_UP 调 performClick，TalkBack/键盘可用；④ capture 结束前复查 pid、拒绝空快照；⑤ restore/回滚对跨设备 serial 告警；⑥ device.write 两阶段写入（.hsw-tmp 后再覆盖），set_metadata 改 chown && chmod。待办（已记录未改）：detectCurrentLocked 的 DB+边车读取无一致性重试（极端 checkpoint 窗口可能误判）；confirmSwitch worker 无 finally（Error 时 busy 可能滞留）。
+
+- 补充（收尾）两项待办已修：① detectCurrentLocked 改用 readDbGroup 分帧读取（一帧内含主库+journal/wal/shm），游戏运行时做两遍稳定性校验、不稳定则回退单遍，避免 checkpoint 窗口把旧账号当当前账号；真机验证仍正确识别当前账号。② confirmSwitch worker 增加 handedOff 标记与 finally，异常/Error 时必定复位 busy，只有交给确认框才保持占用。最终验证：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto）与 debug/release 构建（证书指纹校验）全部通过。

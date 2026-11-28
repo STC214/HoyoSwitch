@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
@@ -25,19 +26,24 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.Layout;
-import android.util.DisplayMetrics;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.DragEvent;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
@@ -117,7 +123,10 @@ public final class MainActivity extends Activity {
     private ScrollView pageScroll;
     private ScrollView columnScroll;
     private Dialog visibleDialog;
-    private volatile boolean busy;
+    /** Process-wide: a long write must stay exclusive even if the page is recreated. */
+    private static volatile boolean busy;
+    /** Most recently resumed instance, so an operation finishing after a rotation still lands. */
+    private static MainActivity current;
 
     @Override
     protected void attachBaseContext(Context base) {
@@ -296,6 +305,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (current == this) {
+            current = null;
+        }
         if (visibleDialog != null) {
             visibleDialog.dismiss();
             visibleDialog = null;
@@ -326,6 +338,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        current = this;
         pageResumed = true;
         FloatingService.addSnapshotObserver(snapshotObserver);
         UiSettings.addObserver(settingsObserver);
@@ -370,10 +383,9 @@ public final class MainActivity extends Activity {
         addAccounts(right, accountsHeading, 180);
         logHome = right;
 
-        ScrollView rightScroll = new ScrollView(this);
+        ScrollView rightScroll = new LockableScrollView(this);
         columnScroll = rightScroll;
         rightScroll.addView(right);
-        rightScroll.setOnTouchListener((view, event) -> cardOpActive);
         // Focus restore can scroll a column down on first layout; start both at the top.
         leftScroll.post(() -> leftScroll.scrollTo(0, 0));
         rightScroll.post(() -> rightScroll.scrollTo(0, 0));
@@ -530,7 +542,7 @@ public final class MainActivity extends Activity {
             return buildTwoColumns(root, headerRow, tabs, statusPanel, primaryRow, accountsHeading);
         }
         root.addView(headerRow, withBottomMargin(matchWrap(), dp(12)));
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new LockableScrollView(this);
         pageScroll = scroll;
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -540,8 +552,6 @@ public final class MainActivity extends Activity {
         addAccounts(content, accountsHeading, 120);
 
         scroll.addView(content);
-        // Lock scrolling while a card operation is focused; released immediately after.
-        scroll.setOnTouchListener((view, event) -> cardOpActive);
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return root;
@@ -859,6 +869,11 @@ public final class MainActivity extends Activity {
     }
 
     private void toggleSort() {
+        if (busy) {
+            // Re-sorting during an operation would rewrite fixedOrder from stale data.
+            toast("上一个操作还没结束");
+            return;
+        }
         sortMode = sortMode == SORT_LAST_USED ? SORT_FIXED : SORT_LAST_USED;
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                 .putInt(PREF_SORT, sortMode).apply();
@@ -943,6 +958,7 @@ public final class MainActivity extends Activity {
             return;
         }
         cardOpActive = true;
+        setScrollLock(true);
         moveLogBelowCard(snapshot.id);
         scrollToView(card);
     }
@@ -952,7 +968,16 @@ public final class MainActivity extends Activity {
             return;
         }
         restoreLogToBottom();
+        setScrollLock(false);
         cardOpActive = false;
+    }
+
+    /** Locks the account viewport by disabling scrolling outright, so child views cannot bypass it. */
+    private void setScrollLock(boolean locked) {
+        ScrollView scroll = activeScroll();
+        if (scroll instanceof LockableScrollView) {
+            ((LockableScrollView) scroll).setLocked(locked);
+        }
     }
 
     private void moveLogBelowCard(String snapshotId) {
@@ -1204,7 +1229,7 @@ public final class MainActivity extends Activity {
     }
 
     private void moveCard(SnapshotStore.Snapshot snapshot, int delta) {
-        if (sortMode != SORT_FIXED || displayedData == null || snapshot.game != game) {
+        if (busy || sortMode != SORT_FIXED || displayedData == null || snapshot.game != game) {
             return;
         }
         int index = fixedOrder.indexOf(snapshot.id);
@@ -1280,7 +1305,9 @@ public final class MainActivity extends Activity {
                 final String versionNow = version;
                 main.post(() -> finishRefresh(selected, generation, data, rooted,
                         runningNow, versionNow));
-            } catch (RuntimeException error) {
+            } catch (Throwable error) {
+                // Catch Error too: a worker that dies without posting back would leave
+                // refreshInFlight true and silently disable every later refresh.
                 Log.w("hoyoswitch", "snapshot refresh failed", error);
                 main.post(() -> finishRefresh(selected, generation, null, false, null, ""));
             }
@@ -1305,7 +1332,9 @@ public final class MainActivity extends Activity {
             displayedStatusPrefix = null;
             displayedTechnicalStatus = null;
             cardActionsAvailable = false;
-            recoveryRetry.setVisibility(View.GONE);
+            // A failed read must still offer an in-page way to retry.
+            recoveryRetry.setText("点此重试刷新");
+            recoveryRetry.setVisibility(View.VISIBLE);
             statusView.setTextColor(getColor(R.color.danger));
             statusView.setText("刷新失败，请重试");
             captureButton.setEnabled(false);
@@ -1327,6 +1356,7 @@ public final class MainActivity extends Activity {
             displayedTechnicalStatus += "\n" + data.recoveryError;
         }
         displayedStatusPrefix = rooted ? processText : "未取得 Root · " + processText;
+        recoveryRetry.setText("已停止游戏，重试恢复");
         recoveryRetry.setVisibility(recoveryPending ? View.VISIBLE : View.GONE);
         statusView.setTextColor(getColor(recoveryPending || !rooted ? R.color.danger : R.color.accent));
         renderDisplayedCards(selected);
@@ -1424,6 +1454,29 @@ public final class MainActivity extends Activity {
         return current.mid.isEmpty()
                 ? (current.note.isEmpty() ? "已登录，无法识别" : current.note)
                 : "已登录，但不在任何快照中";
+    }
+
+    /** ScrollView whose scrolling can be fully disabled while a card operation owns the screen. */
+    private static final class LockableScrollView extends ScrollView {
+        private boolean locked;
+
+        LockableScrollView(Context context) {
+            super(context);
+        }
+
+        void setLocked(boolean locked) {
+            this.locked = locked;
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent event) {
+            return !locked && super.onInterceptTouchEvent(event);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            return !locked && super.onTouchEvent(event);
+        }
     }
 
     private static final class CardActions extends ViewGroup {
@@ -1613,13 +1666,17 @@ public final class MainActivity extends Activity {
             TextView meta = new TextView(this);
             meta.setText("更新于 " + format.format(new Date(snapshot.createdAt))
                     + (readable ? "" : " · 快照无法读取")
-                    + (switchable || isCurrent ? "" : " · 切换待验证"));
+                    + (readable && !switchable && !isCurrent ? " · 切换待验证" : ""));
             meta.setTextSize(12);
             meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
             card.addView(meta, withTopMargin(withBottomMargin(matchWrap(), dp(10)), dp(4)));
 
-            Button primary = pill(isCurrent ? "更新快照" : SWITCH_ACCOUNT_LABEL, true);
-            if (isCurrent) {
+            // A broken snapshot keeps its card; its main action becomes a manual update instead of
+            // an unusable switch. Details stay reachable from the "⋯" menu.
+            Button primary = pill(!readable || isCurrent ? "更新快照" : SWITCH_ACCOUNT_LABEL, true);
+            if (!readable) {
+                primary.setOnClickListener(view -> confirmUpdateUnreadable(snapshot));
+            } else if (isCurrent) {
                 primary.setOnClickListener(view -> runOp("更新快照 " + snapshot.name, snapshot, () -> {
                     AccountUpdater.updateTarget(store, snapshot, this::appendLog);
                     toast("已更新快照");
@@ -1627,7 +1684,9 @@ public final class MainActivity extends Activity {
             } else {
                 primary.setOnClickListener(view -> confirmSwitch(snapshot));
             }
-            boolean enabled = cardActionsAvailable && readable && (isCurrent || switchable);
+            // A broken card's update still needs a writable state (root, known process, no pending
+            // recovery); otherwise it would be clickable but bound to fail.
+            boolean enabled = cardActionsAvailable && (!readable || isCurrent || switchable);
             primary.setEnabled(enabled);
             primary.setAlpha(enabled ? 1f : 0.45f);
             Button credentials = pill("账号与密码", false);
@@ -1710,6 +1769,14 @@ public final class MainActivity extends Activity {
     }
 
     private void showDialog(Dialog dialog, LinearLayout card) {
+        showDialog(dialog, card, null);
+    }
+
+    /**
+     * Shows a dialog; {@code state.cancel} runs once if it is dismissed without confirming, which
+     * also covers programmatic dismissal during recreation (setOnCancelListener never fires then).
+     */
+    private void showDialog(Dialog dialog, LinearLayout card, DialogState dialogState) {
         if (visibleDialog != null) {
             visibleDialog.dismiss();
         }
@@ -1717,6 +1784,9 @@ public final class MainActivity extends Activity {
         dialog.setOnDismissListener(dismissed -> {
             if (visibleDialog == dialog) {
                 visibleDialog = null;
+            }
+            if (dialogState != null && !dialogState.confirmed && dialogState.cancel != null) {
+                dialogState.cancel.run();
             }
         });
         ScrollView viewport = new ScrollView(this);
@@ -1726,12 +1796,22 @@ public final class MainActivity extends Activity {
         dialog.show();
         Window window = dialog.getWindow();
         if (window != null) {
-            DisplayMetrics metrics = getResources().getDisplayMetrics();
-            int width = Math.min(metrics.widthPixels - dp(48), dp(520));
+            View activityContent = findViewById(android.R.id.content);
+            int measured = activityContent == null ? 0 : activityContent.getWidth();
+            int width = dialogWidth(measured, getResources().getDisplayMetrics().widthPixels,
+                    dp(48), dp(520));
             int state = window.getAttributes().softInputMode & WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE;
             window.setSoftInputMode(state | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
             window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
         }
+    }
+
+    static int dialogWidth(int measured, int fallback, int margin, int maximum) {
+        int available = measured > 0 ? measured : fallback;
+        if (available <= 0) {
+            return WindowManager.LayoutParams.WRAP_CONTENT;
+        }
+        return Math.min(available - Math.min(margin, available / 4), Math.max(1, maximum));
     }
 
     private void showConfirm(String title, String message, String positiveLabel, Runnable onPositive) {
@@ -1752,26 +1832,28 @@ public final class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         Button cancel = pill("取消", false);
-        cancel.setOnClickListener(view -> {
-            dialog.dismiss();
-            if (onCancel != null) {
-                onCancel.run();
-            }
-        });
+        // The cancel path is handled once, by the dismiss listener in showDialog: it also covers
+        // programmatic dismissal (onDestroy during recreation), where setOnCancelListener never
+        // fires and a pending operation would stay "busy" forever.
+        cancel.setOnClickListener(view -> dialog.dismiss());
         Button positive = destructive ? dangerPill(positiveLabel) : pill(positiveLabel, true);
+        DialogState state = new DialogState();
+        state.cancel = onCancel;
         positive.setOnClickListener(view -> {
+            state.confirmed = true;
             dialog.dismiss();
             onPositive.run();
         });
         row.addView(cancel, weightWrap(1f, dp(4)));
         row.addView(positive, weightWrap(1f, dp(4)));
         card.addView(row, withTopMargin(matchWrap(), dp(12)));
-        dialog.setOnCancelListener(dismissed -> {
-            if (onCancel != null) {
-                onCancel.run();
-            }
-        });
-        showDialog(dialog, card);
+        showDialog(dialog, card, state);
+    }
+
+    /** Per-dialog state so dismissing one dialog cannot disturb another. */
+    private static final class DialogState {
+        Runnable cancel;
+        boolean confirmed;
     }
 
     private Button dangerPill(String text) {
@@ -1917,7 +1999,7 @@ public final class MainActivity extends Activity {
                 toast("还没有设置" + label);
                 return;
             }
-            copyToClipboard(label, actual);
+            copyToClipboard(label, actual, password);
         });
         row.addView(copy, new LinearLayout.LayoutParams(dp(64), dp(34)));
         return row;
@@ -1931,47 +2013,94 @@ public final class MainActivity extends Activity {
         return button;
     }
 
-    private void copyToClipboard(String label, String value) {
+    private void copyToClipboard(String label, String value, boolean sensitive) {
         ClipboardManager manager = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (manager == null) {
             toast("系统剪贴板不可用");
             return;
         }
-        manager.setPrimaryClip(ClipData.newPlainText(label, value));
+        ClipData clip = ClipData.newPlainText(label, value);
+        if (sensitive) {
+            PersistableBundle extras = new PersistableBundle();
+            extras.putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true);
+            clip.getDescription().setExtras(extras);
+        }
+        manager.setPrimaryClip(clip);
         toast("已复制" + label);
     }
 
     private void showCredentialsDialog(SnapshotStore.Snapshot snapshot) {
+        final String previousAccount = snapshot.loginName;
+        final String previousCiphertext = snapshot.passwordEnc;
+        final String storedPassword;
+        try {
+            storedPassword = store.decodePassword(previousCiphertext);
+        } catch (IOException error) {
+            showPasswordUnreadableDialog(snapshot, previousAccount, previousCiphertext);
+            return;
+        }
+        editCredentials(snapshot, previousAccount, previousCiphertext, storedPassword);
+    }
+
+    /** Shown when the stored password note cannot be decrypted; the old record is left untouched. */
+    private void showPasswordUnreadableDialog(SnapshotStore.Snapshot snapshot, String previousAccount,
+                                              String previousCiphertext) {
         Dialog dialog = baseDialog();
         LinearLayout card = dialogCard();
+        card.addView(dialogTitle("无法读取已保存的密码"), withBottomMargin(matchWrap(), dp(10)));
+        card.addView(dialogMessage("原记录尚未更改。如果你知道当前密码，可以手动重新录入。"
+                + "只有保存新密码后才会替换旧记录。"), withBottomMargin(matchWrap(), dp(14)));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button keep = pill("保留旧记录", false);
+        keep.setOnClickListener(view -> dialog.dismiss());
+        Button reenter = pill("重新录入", true);
+        reenter.setOnClickListener(view -> {
+            dialog.dismiss();
+            editCredentials(snapshot, previousAccount, previousCiphertext, null);
+        });
+        row.addView(keep, weightWrap(1f, dp(4)));
+        row.addView(reenter, weightWrap(1f, dp(4)));
+        card.addView(row, matchWrap());
+        showDialog(dialog, card);
+    }
+
+    private void editCredentials(SnapshotStore.Snapshot snapshot, String previousAccount,
+                                 String previousCiphertext, String storedPassword) {
+        boolean replacingUnreadable = storedPassword == null;
+        Dialog dialog = baseDialog();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        }
+        LinearLayout card = dialogCard();
+        card.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         card.addView(dialogTitle("账号密码 · " + snapshot.name),
                 withBottomMargin(matchWrap(), dp(12)));
 
         EditText account = new EditText(this);
         account.setHint("账号（手机号 / 邮箱 / 用户名）");
-        account.setText(snapshot.loginName);
+        account.setText(previousAccount);
         account.setSingleLine(true);
         styleInput(account);
         card.addView(account, withBottomMargin(matchWrap(), dp(10)));
 
         EditText password = new EditText(this);
-        password.setHint("密码（加密保存）");
+        password.setHint(replacingUnreadable ? "输入新密码以替换旧记录" : "密码（加密保存）");
         password.setSingleLine(true);
         password.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
         styleInput(password);
-        try {
-            password.setText(store.password(snapshot));
-        } catch (IOException error) {
-            toast("密码读取失败：" + error.getMessage());
-        }
+        password.setText(storedPassword);
 
-        ImageView eye = new ImageView(this);
+        ImageButton eye = new ImageButton(this);
         eye.setImageResource(R.drawable.ic_eye_off);
+        eye.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         eye.setColorFilter(getColor(R.color.accent));
         eye.setPadding(dp(10), dp(10), dp(10), dp(10));
+        eye.setFocusable(true);
         eye.setContentDescription("显示密码");
-        eye.setBackground(surface(R.color.pill_bg, R.color.pill_bg, 18));
+        eye.setBackground(ripple(surface(R.color.pill_bg, R.color.pill_bg, 18)));
         final boolean[] revealed = {false};
         eye.setOnClickListener(view -> {
             revealed[0] = !revealed[0];
@@ -1987,22 +2116,55 @@ public final class MainActivity extends Activity {
         passwordRow.setOrientation(LinearLayout.HORIZONTAL);
         passwordRow.setGravity(Gravity.CENTER_VERTICAL);
         passwordRow.addView(password, weightWrap());
-        LinearLayout.LayoutParams eyeParams = new LinearLayout.LayoutParams(dp(44), dp(44));
-        eyeParams.leftMargin = dp(8);
+        LinearLayout.LayoutParams eyeParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+        eyeParams.setMarginStart(dp(8));
         passwordRow.addView(eye, eyeParams);
         card.addView(passwordRow, withBottomMargin(matchWrap(), dp(14)));
+
+        CheckBox confirmClear = new CheckBox(this);
+        confirmClear.setText("确认清除已保存的密码备注");
+        confirmClear.setMinHeight(dp(48));
+        confirmClear.setVisibility(View.GONE);
+        card.addView(confirmClear, withBottomMargin(matchWrap(), dp(8)));
+        password.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence text, int start, int before, int count) {
+                confirmClear.setChecked(false);
+                confirmClear.setVisibility(View.GONE);
+            }
+
+            @Override
+            public void afterTextChanged(Editable text) {}
+        });
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         Button cancel = pill("取消", false);
         cancel.setOnClickListener(view -> dialog.dismiss());
-        Button save = pill("保存", true);
+        Button save = pill(replacingUnreadable ? "替换旧密码" : "保存", true);
         save.setOnClickListener(view -> {
+            if (busy) {
+                toast("上一个操作还没结束");
+                return;
+            }
             String accountText = account.getText().toString();
             String passwordText = password.getText().toString();
+            if (replacingUnreadable && passwordText.isEmpty()) {
+                password.setError("请输入新密码，旧记录尚未更改");
+                return;
+            }
+            if (needsPasswordClearConfirmation(storedPassword, passwordText, confirmClear.isChecked())) {
+                confirmClear.setVisibility(View.VISIBLE);
+                toast("清除已有密码需要确认，旧记录尚未更改");
+                return;
+            }
             dialog.dismiss();
             runOp("保存账号密码", () -> {
-                store.setCredentials(snapshot, accountText, passwordText);
+                store.setCredentials(snapshot, previousAccount, previousCiphertext,
+                        accountText, passwordText);
                 appendLog("已保存账号密码：" + snapshot.name);
             });
         });
@@ -2010,6 +2172,10 @@ public final class MainActivity extends Activity {
         row.addView(save, weightWrap(1f, dp(4)));
         card.addView(row, matchWrap());
         showDialog(dialog, card);
+    }
+
+    static boolean needsPasswordClearConfirmation(String original, String draft, boolean confirmed) {
+        return original != null && !original.isEmpty() && draft.isEmpty() && !confirmed;
     }
 
     private void styleInput(EditText input) {
@@ -2021,6 +2187,11 @@ public final class MainActivity extends Activity {
     }
 
     private void showCardMenu(SnapshotStore.Snapshot snapshot, boolean readable) {
+        if (busy) {
+            // Accepting a rename/capture dialog now would silently drop the input at runOp.
+            toast("上一个操作还没结束");
+            return;
+        }
         Log.i("hoyoswitch", "card menu: " + snapshot.name);
         List<Action> actions = new ArrayList<>();
         actions.add(new Action(android.R.drawable.ic_menu_info_details, "快照详情", "查看时间、文件状态和账号密码备注",
@@ -2064,6 +2235,25 @@ public final class MainActivity extends Activity {
         close.setOnClickListener(view -> dialog.dismiss());
         card.addView(close, matchWrap());
         showDialog(dialog, card);
+    }
+
+    /**
+     * Overwrites a broken snapshot with the current account state. The card id/name, the password
+     * note and the last-used time are preserved; a failure or cancel leaves the old broken card.
+     * The broken snapshot cannot be decrypted, so the target account can never be verified here:
+     * the user must confirm manually and owns the result.
+     */
+    private void confirmUpdateUnreadable(SnapshotStore.Snapshot snapshot) {
+        showConfirm("更新失效快照",
+                "这张快照已损坏，程序无法校验它原本对应哪个账号。\n"
+                        + "将用当前登录的账号状态覆盖「" + snapshot.name + "」，"
+                        + "名称、备注、账号与密码都会保留。\n"
+                        + "请确认当前登录的正是这张卡片对应的账号；确认后的覆盖结果由你负责。",
+                "确认更新",
+                () -> runOp("更新快照 " + snapshot.name, snapshot, () -> {
+                    store.updateSnapshot(snapshot);
+                    toast("已更新快照");
+                }));
     }
 
     private void showAccountCredentials(SnapshotStore.Snapshot snapshot) {
@@ -2117,7 +2307,22 @@ public final class MainActivity extends Activity {
     }
 
     private void historyDialog(SnapshotStore.Snapshot snapshot) {
-        List<SnapshotStore.HistoryEntry> entries = store.history(snapshot);
+        // history() takes the store lock; loading it on the main thread would block behind a
+        // running capture/switch (root I/O can take seconds).
+        new Thread(() -> {
+            final List<SnapshotStore.HistoryEntry> entries;
+            try {
+                entries = store.history(snapshot);
+            } catch (RuntimeException error) {
+                main.post(() -> toast("读取历史版本失败：" + error.getMessage()));
+                return;
+            }
+            main.post(() -> showHistorySheet(snapshot, entries));
+        }, "history-load").start();
+    }
+
+    private void showHistorySheet(SnapshotStore.Snapshot snapshot,
+                                  List<SnapshotStore.HistoryEntry> entries) {
         if (entries.isEmpty()) {
             toast("这个快照还没有历史版本");
             return;
@@ -2150,31 +2355,29 @@ public final class MainActivity extends Activity {
         ++refreshGeneration;
         appendLog("读取当前账号…");
         new Thread(() -> {
+            // Only a confirmed hand-off to the dialog may keep busy=true; every other path
+            // (including Error/abnormal exit) must release it.
+            final boolean[] handedOff = {false};
             try {
                 if (!store.decryptable(target)) {
                     appendLog("这张快照无法解密，不能切换");
-                    main.post(() -> {
-                        if (pageResumed && !isFinishing() && !isDestroyed()) {
-                            toast("这张快照无法解密，请删除后重新拍摄");
-                        }
-                        finishOperation(false);
-                    });
+                    if (pageResumed && !isFinishing() && !isDestroyed()) {
+                        toast("这张快照无法解密，请删除后重新拍摄");
+                    }
                     return;
                 }
                 SnapshotStore.Current current = store.detectCurrent(target.game);
                 if (current.loggedIn && !current.mid.isEmpty()
                         && current.mid.equals(store.accountMid(target))) {
                     appendLog("当前已经是这个账号，无需切换（不会关闭游戏）");
-                    main.post(() -> {
-                        if (pageResumed && !isFinishing() && !isDestroyed()) {
-                            toast("当前已经是这个账号，无需切换");
-                        }
-                        finishOperation(false);
-                    });
+                    if (pageResumed && !isFinishing() && !isDestroyed()) {
+                        toast("当前已经是这个账号，无需切换");
+                    }
                     return;
                 }
                 List<SnapshotStore.Snapshot> snapshots = store.list(target.game);
                 String currentLabel = describe(current, match(current, snapshots));
+                handedOff[0] = true;
                 main.post(() -> {
                     if (pageResumed && !isFinishing() && !isDestroyed()) {
                         askSwitch(target, currentLabel);
@@ -2184,7 +2387,10 @@ public final class MainActivity extends Activity {
                 });
             } catch (Exception error) {
                 reportOperationError(error);
-                main.post(() -> finishOperation(false));
+            } finally {
+                if (!handedOff[0]) {
+                    main.post(() -> finishOperation(false));
+                }
             }
         }).start();
     }
@@ -2335,21 +2541,28 @@ public final class MainActivity extends Activity {
 
     private void finishOperation(boolean followCard) {
         busy = false;
-        if (!isFinishing() && !isDestroyed()) {
-            followCurrentCard |= followCard;
-            unfocusCard();
-            refresh();
+        // After a rotation the operation's owner is gone; finish on whichever page is live now.
+        MainActivity target = usable(current) ? current : usable(this) ? this : null;
+        if (target != null) {
+            target.followCurrentCard |= followCard;
+            target.unfocusCard();
+            target.refresh();
         }
+    }
+
+    private static boolean usable(MainActivity activity) {
+        return activity != null && !activity.isFinishing() && !activity.isDestroyed();
     }
 
     private void appendLog(String message) {
         main.post(() -> {
-            if (isFinishing() || isDestroyed()) {
+            MainActivity target = usable(current) ? current : this;
+            if (!usable(target) || target.logView == null) {
                 return;
             }
             String time = new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date());
             String line = time + "  " + message;
-            String text = logView.getText().toString();
+            String text = target.logView.getText().toString();
             String next = text.isEmpty() ? line : text + "\n" + line;
             String[] lines = next.split("\n");
             if (lines.length > 200) {
@@ -2362,8 +2575,9 @@ public final class MainActivity extends Activity {
                 }
                 next = builder.toString();
             }
-            logView.setText(next);
-            logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
+            target.logView.setText(next);
+            final ScrollView scroll = target.logScroll;
+            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
         });
     }
 

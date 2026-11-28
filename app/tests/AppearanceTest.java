@@ -1,6 +1,9 @@
 package dev.hoyoswitch.app;
 
+import android.content.SharedPreferences;
 import android.content.res.Configuration;
+
+import java.lang.reflect.Proxy;
 
 public final class AppearanceTest {
     public static void main(String[] args) {
@@ -15,6 +18,11 @@ public final class AppearanceTest {
                 throw new AssertionError("mode preference did not round-trip");
             }
         }
+        if (AppAppearance.readMode(prefs("dark")) != dark
+                || AppAppearance.readMode(prefs("obsolete")) != system
+                || AppAppearance.readMode(prefs(false)) != system) {
+            throw new AssertionError("invalid stored theme should fall back without changing preferences");
+        }
         int type = Configuration.UI_MODE_TYPE_DESK;
         int systemLight = type | Configuration.UI_MODE_NIGHT_NO;
         int systemDark = type | Configuration.UI_MODE_NIGHT_YES;
@@ -25,6 +33,16 @@ public final class AppearanceTest {
         check(systemDark, light, systemLight);
         check(systemLight, light, systemLight);
         System.out.println("Appearance selection regression: PASS");
+    }
+
+    private static SharedPreferences prefs(Object value) {
+        return (SharedPreferences) Proxy.newProxyInstance(SharedPreferences.class.getClassLoader(),
+                new Class<?>[] {SharedPreferences.class}, (proxy, method, args) -> {
+                    if (!"getString".equals(method.getName()) || !AppAppearance.MODE_KEY.equals(args[0])) {
+                        throw new AssertionError("unexpected preferences access: " + method.getName());
+                    }
+                    return (String) value;
+                });
     }
 
     private static void check(int base, AppAppearance.Mode mode, int expected) {

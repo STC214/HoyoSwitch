@@ -1,22 +1,25 @@
 """Shared adb + su helpers for the StarRail root tools.
 
+Control-flow commands run through ``adb shell`` so the remote exit code survives;
+``adb exec-out`` returns 0 for everything and merges stderr into stdout, so it is
+used only for raw binary payloads. Writes overwrite the existing inode
+(``base64 -d > path``) so owner, mode and SELinux context of game files survive.
+
 Every remote read goes through ``exec-out`` so bytes are not line-ending
-translated, and every write overwrites the existing inode (``cat > path``) so the
-owner, mode and SELinux context of game files survive.
+translated.
 """
 
+import base64
 import hashlib
 import re
-import os
 import shlex
 import subprocess
-import sys
-import tempfile
-import uuid
 
 PACKAGE = 'com.miHoYo.hkrpg'
 DATA_DIR = f'/data/user/0/{PACKAGE}'
 REMOTE_TMP = '/data/local/tmp'
+# Printed when a read target is missing or unreadable; exec-out gives no exit code.
+READ_FAILURE = b'@@hoyoswitch-read-failed@@'
 
 
 def digest(data):
@@ -42,10 +45,18 @@ class Device:
         return self._run(['shell', *args], ok=ok).stdout.decode('utf-8', errors='replace').strip()
 
     def root(self, script, ok=(0,)):
-        return self._run(['exec-out', 'su', '-c', script], ok=ok).stdout
+        """Runs a root script through ``adb shell`` so its exit code is observable.
+
+        Output is text (CRLF translated); use :meth:`read` for binary payloads.
+        """
+        return self._run(['shell', 'su -c ' + shlex.quote(script)], ok=ok).stdout
 
     def root_text(self, script, ok=(0,)):
         return self.root(script, ok=ok).decode('utf-8', errors='replace').strip()
+
+    def _exec_out(self, script, ok=(0,)):
+        """Raw byte output. ``exec-out`` reports exit 0 even on failure."""
+        return self._run(['exec-out', 'su', '-c', script], ok=ok).stdout
 
     def game_pids(self):
         result = self._run(['shell', 'pidof', PACKAGE], ok=(0, 1))
@@ -61,9 +72,10 @@ class Device:
     def info(self, path):
         """Metadata for one remote path, or None when it does not exist."""
         quoted = shlex.quote(path)
-        result = self._run(['exec-out', 'su', '-c',
-                            f'if [ ! -e {quoted} ]; then exit 3; fi; '
-                            f'stat -c "%u %g %a %s %Y" {quoted}; ls -Z {quoted}'],
+        # adb shell (not exec-out) so `exit 3` actually reaches us.
+        result = self._run(['shell', 'su -c ' + shlex.quote(
+            f'if [ ! -e {quoted} ]; then exit 3; fi; '
+            f'stat -c "%u %g %a %s %Y" {quoted}; ls -Z {quoted}')],
                            ok=(0, 3))
         if result.returncode == 3:
             return None
@@ -86,46 +98,47 @@ class Device:
         return dict(uid=uid, gid=gid, mode=mode, size=int(size), mtime=int(mtime), context=context)
 
     def read(self, path):
-        return self.root(f'cat {shlex.quote(path)}')
+        quoted = shlex.quote(path)
+        # exec-out has no exit code, so the remote side prints a marker on failure; without it a
+        # "cat: ...: No such file" message would be mistaken for file content.
+        marker = shlex.quote(READ_FAILURE.decode('ascii'))
+        data = self._exec_out(
+            f'if [ ! -e {quoted} ]; then printf %s {marker}; exit 3; fi; '
+            f'cat {quoted} || printf %s {marker}')
+        if data.startswith(READ_FAILURE) or data.endswith(READ_FAILURE):
+            raise RuntimeError(f'{path}: could not read remote file')
+        return data
 
     def write(self, path, data):
-        stamp = uuid.uuid4().hex
-        remote = f'{REMOTE_TMP}/hoyoswitch-{stamp}'
-        local = None
-        push_started = False
-        operation_failed = False
-        try:
-            with tempfile.NamedTemporaryFile(prefix='hoyoswitch-', delete=False) as handle:
-                local = handle.name
-                handle.write(data)
-            push_started = True
-            self._run(['push', local, remote])
-            self.root(f'cat {shlex.quote(remote)} > {shlex.quote(path)}')
-        except BaseException:
-            operation_failed = True
-            raise
-        finally:
-            cleanup_errors = []
-            try:
-                if local is not None:
-                    os.unlink(local)
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                cleanup_errors.append(('local', error))
-            if push_started:
-                try:
-                    self.root(f'rm -f {shlex.quote(remote)}')
-                except Exception as error:
-                    cleanup_errors.append(('device', error))
-            if cleanup_errors:
-                for where, error in cleanup_errors:
-                    print(f'{where} temporary file cleanup failed: {error}', file=sys.stderr)
-                if not operation_failed:
-                    raise RuntimeError('write completed but temporary file cleanup failed') from cleanup_errors[0][1]
+        """Overwrites the existing inode, keeping binary bytes intact.
+
+        Two phases: decode into a sibling temp file first, then copy it over the target. A write cut
+        short by Ctrl+C or a timeout can therefore only leave the temp file behind, not a truncated
+        game database. ``adb shell`` stdin is text-mode on Windows (0x1A truncates, CRLF is
+        rewritten), so the payload travels as base64 and is decoded on the device.
+        """
+        quoted = shlex.quote(path)
+        temp = shlex.quote(path + '.hsw-tmp')
+        # Guard first: a missing decoder would otherwise fail after truncating the temp file.
+        script = ('if ! command -v base64 >/dev/null 2>&1; then '
+                  'echo "base64 not available on device" >&2; exit 127; fi; '
+                  f'base64 -d > {temp} && cat {temp} > {quoted} && rm -f {temp} '
+                  f'|| {{ rm -f {temp}; exit 1; }}')
+        command = ['adb', '-s', self.serial, 'shell', 'su -c ' + shlex.quote(script)]
+        result = subprocess.run(command, input=base64.b64encode(data), capture_output=True,
+                                timeout=180)
+        stderr = result.stderr.decode('utf-8', errors='replace').strip()
+        stdout = result.stdout.decode('utf-8', errors='replace').strip()
+        self.trace.append(dict(command=command, exit_code=result.returncode, stdout=stdout,
+                               stderr=stderr))
+        if result.returncode != 0:
+            raise RuntimeError(
+                f'{shlex.join(command)}: exit {result.returncode}: {stderr or stdout}')
 
     def set_metadata(self, path, uid, gid, mode, context):
         quoted = shlex.quote(path)
-        self.root(f'chown {uid}:{gid} {quoted}; chmod {mode} {quoted}')
+        # Both must succeed: chown alone failing used to be hidden by a successful chmod.
+        self.root(f'chown {uid}:{gid} {quoted} && chmod {mode} {quoted}')
         if context:
+            # chcon can legitimately be unavailable; a failure is verified by the caller's probe.
             self.root(f'chcon {shlex.quote(context)} {quoted}', ok=(0, 1))

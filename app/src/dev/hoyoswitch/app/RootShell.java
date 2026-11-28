@@ -86,6 +86,9 @@ final class RootShell {
                 errThread.start();
                 if (!process.waitFor(10, TimeUnit.SECONDS)) {
                     process.destroyForcibly();
+                    // Close the pipes so the collector threads cannot stay blocked on a grandchild.
+                    closeQuietly(process.getInputStream());
+                    closeQuietly(process.getErrorStream());
                     failures.append(candidate).append(":timeout ");
                     continue;
                 }
@@ -150,6 +153,11 @@ final class RootShell {
             // hangs, which used to leave operations stuck until the app was killed.
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
+                // Unblock the collector threads; a grandchild holding the pipe would otherwise
+                // keep them (and their buffers) alive after every timeout. The stdin pipe is left
+                // alone: closing it could block on the writer thread's monitor and hide the timeout.
+                closeQuietly(process.getInputStream());
+                closeQuietly(process.getErrorStream());
                 throw new IOException("root command timed out: " + command);
             }
             byte[] out = stdout.await(outThread, 5000);
@@ -198,6 +206,14 @@ final class RootShell {
                 throw new IOException("root command output read failed: " + thread.getName(), failure);
             }
             return buffer.toByteArray();
+        }
+    }
+
+    private static void closeQuietly(java.io.Closeable closeable) {
+        try {
+            closeable.close();
+        } catch (IOException ignored) {
+            // Best effort: the process is already being torn down.
         }
     }
 

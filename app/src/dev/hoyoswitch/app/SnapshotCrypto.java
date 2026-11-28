@@ -45,6 +45,11 @@ final class SnapshotCrypto {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, key());
             byte[] iv = cipher.getIV();
+            if (iv == null || iv.length != IV_BYTES) {
+                // The format stores a fixed-size IV; anything else could never be decrypted.
+                throw new IOException("不支持的加密 IV 长度: "
+                        + (iv == null ? "null" : String.valueOf(iv.length)));
+            }
             byte[] body = cipher.doFinal(plain);
             byte[] out = new byte[MAGIC.length + IV_BYTES + body.length];
             System.arraycopy(MAGIC, 0, out, 0, MAGIC.length);
