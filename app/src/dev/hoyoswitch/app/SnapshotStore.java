@@ -117,6 +117,7 @@ final class SnapshotStore {
     private final File root;
     private final Context context;
     private final LocalPasswordCrypto passwordCrypto;
+    private final DisplayReadabilityCache displayReadability = new DisplayReadabilityCache();
 
     SnapshotStore(Context context) {
         this.context = context;
@@ -527,6 +528,27 @@ final class SnapshotStore {
         }
     }
 
+    /** Presentation only: read local manifests without root, decryption, cleanup or recovery. */
+    List<Snapshot> readCardPreview(GameProfile game) {
+        List<Snapshot> cards = new ArrayList<>();
+        File[] children = dirFor(game).listFiles();
+        if (children == null) {
+            return cards;
+        }
+        for (File child : children) {
+            if (!child.isDirectory() || child.getName().startsWith(".")
+                    || !new File(child, MANIFEST).isFile()) {
+                continue;
+            }
+            try {
+                cards.add(readManifest(game, child));
+            } catch (IOException | JSONException ignored) {
+                // A concurrently changing manifest is left for the authoritative refresh.
+            }
+        }
+        return cards;
+    }
+
     /** Worker only: identity, readability and manifest must come from the same snapshot version. */
     RefreshData readRefreshData(GameProfile game, boolean cleanUp) {
         synchronized (LOCK) {
@@ -558,7 +580,9 @@ final class SnapshotStore {
                     String known = dedupeMids.get(snapshot.id);
                     midById.put(snapshot.id, known != null ? known : accountMid(snapshot));
                 }
-                readableById.put(snapshot.id, decryptable(snapshot));
+                String signature = displaySignature(snapshot);
+                readableById.put(snapshot.id, displayReadability.read(
+                        snapshot.dir.getAbsolutePath(), signature, () -> decryptable(snapshot)));
             }
             return new RefreshData(current, snapshots, midById, readableById, recoveryError);
         }
@@ -572,6 +596,28 @@ final class SnapshotStore {
         copy.dir = source.dir;
         adopt(copy, source);
         return copy;
+    }
+
+    void invalidateDisplayChecks() {
+        displayReadability.clear();
+    }
+
+    private String displaySignature(Snapshot snapshot) {
+        StringBuilder signature = new StringBuilder();
+        appendDisplayStamp(signature, new File(snapshot.dir, MANIFEST));
+        for (String relative : snapshot.game.files) {
+            if (relative.endsWith(".xml")) {
+                signature.append(relative).append(':');
+                appendDisplayStamp(signature, storedFile(snapshot, relative));
+                appendDisplayStamp(signature, legacyFile(snapshot, relative));
+            }
+        }
+        return signature.toString();
+    }
+
+    private static void appendDisplayStamp(StringBuilder signature, File file) {
+        signature.append(file.isFile()).append('/').append(file.length()).append('/')
+                .append(file.lastModified()).append(';');
     }
 
     private List<Snapshot> listLocked(GameProfile game) {

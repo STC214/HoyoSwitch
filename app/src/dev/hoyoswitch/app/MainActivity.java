@@ -27,6 +27,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PersistableBundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.Layout;
@@ -58,6 +59,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -101,10 +103,18 @@ public final class MainActivity extends Activity {
     private View currentCardView;
     private boolean followCurrentCard;
 
-    private int refreshGeneration;
+    private volatile int refreshGeneration;
     private boolean refreshInFlight;
     private boolean pageResumed;
     private SnapshotStore.RefreshData displayedData;
+    // Presentation only: cached cards never authorize actions before the fresh read completes.
+    private final Map<GameProfile, SnapshotStore.RefreshData> tabPreviews = new HashMap<>();
+    private final Map<GameProfile, String> versionLabels = new HashMap<>();
+    private int previewGeneration;
+    private boolean renderingPreview;
+    private List<Object> renderedCardSignature;
+    private long tabDisplayStarted;
+    private int tabDisplayRequest;
     private String displayedStatusPrefix;
     private String displayedTechnicalStatus;
     private boolean cardActionsAvailable;
@@ -116,6 +126,8 @@ public final class MainActivity extends Activity {
         }
     };
     private final Consumer<GameProfile> snapshotObserver = selected -> {
+        tabPreviews.remove(selected);
+        store.invalidateDisplayChecks();
         if (selected == game) {
             refresh();
         }
@@ -327,6 +339,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         pageResumed = false;
+        ++previewGeneration;
         cancelCardDrag();
         ++refreshGeneration;
         FloatingService.removeSnapshotObserver(snapshotObserver);
@@ -340,6 +353,9 @@ public final class MainActivity extends Activity {
         super.onResume();
         current = this;
         pageResumed = true;
+        // Package updates can occur while the app is in the background.
+        versionLabels.clear();
+        store.invalidateDisplayChecks();
         FloatingService.addSnapshotObserver(snapshotObserver);
         UiSettings.addObserver(settingsObserver);
         refresh();
@@ -480,7 +496,7 @@ public final class MainActivity extends Activity {
         statusPanel.addView(statusPill, matchWrap());
         recoveryRetry = pill("已停止游戏，重试恢复", false);
         recoveryRetry.setVisibility(View.GONE);
-        recoveryRetry.setOnClickListener(view -> refresh());
+        recoveryRetry.setOnClickListener(view -> refreshAllStatus());
         statusPanel.addView(recoveryRetry, withTopMargin(matchWrap(), dp(4)));
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
@@ -639,7 +655,7 @@ public final class MainActivity extends Activity {
                 "查看 Root、游戏版本和进程状态", false, () -> showInfo("运行详情",
                 displayedTechnicalStatus == null ? "尚未读取状态，请刷新。" : displayedTechnicalStatus)));
         actions.add(new Action(android.R.drawable.ic_popup_sync, "刷新", "重新读取账号和游戏状态",
-                false, this::refresh));
+                false, this::refreshAllStatus));
         actions.add(new Action(android.R.drawable.ic_menu_preferences, "主题",
                 "当前选择：" + AppAppearance.mode(this).title, false, this::showAppearanceChoices));
         GameProfile floatingGame = UiSettings.floatingGame(getSharedPreferences(PREFS_NAME, MODE_PRIVATE));
@@ -814,6 +830,9 @@ public final class MainActivity extends Activity {
     }
 
     private void showLoading() {
+        tabDisplayStarted = SystemClock.uptimeMillis();
+        ++tabDisplayRequest;
+        final int request = ++previewGeneration;
         displayedStatusPrefix = null;
         displayedTechnicalStatus = null;
         cardActionsAvailable = false;
@@ -833,8 +852,68 @@ public final class MainActivity extends Activity {
         if (cardList != null) {
             cancelCardDrag();
             cardList.removeAllViews();
+            renderedCardSignature = null;
+            SnapshotStore.RefreshData preview = tabPreviews.get(game);
+            if (preview != null) {
+                renderCardPreview(game, preview.snapshots);
+            } else {
+                TextView loading = new TextView(this);
+                loading.setText("正在读取卡片列表…");
+                loading.setTextColor(getColor(R.color.text_muted));
+                loading.setPadding(0, dp(20), 0, dp(20));
+                cardList.addView(loading, matchWrap());
+                final GameProfile selected = game;
+                new Thread(() -> {
+                    try {
+                        List<SnapshotStore.Snapshot> cards = store.readCardPreview(selected);
+                        main.post(() -> {
+                            if (request == previewGeneration && selected == game
+                                    && !isFinishing() && !isDestroyed() && !busy) {
+                                renderCardPreview(selected, cards);
+                            }
+                        });
+                    } catch (RuntimeException error) {
+                        Log.w("hoyoswitch", "card preview failed", error);
+                    }
+                }, "card-preview").start();
+            }
         }
         currentCardView = null;
+    }
+
+    private void renderCardPreview(GameProfile selected, List<SnapshotStore.Snapshot> snapshots) {
+        List<SnapshotStore.Snapshot> cards = new ArrayList<>(snapshots);
+        sortSnapshots(cards);
+        renderingPreview = true;
+        try {
+            renderCards(cards, null, selected, Collections.emptyMap());
+            setPreviewEnabled(cardList, false);
+            recordTabFrame("preview", cards.size());
+        } finally {
+            renderingPreview = false;
+        }
+    }
+
+    private void recordTabFrame(String phase, int count) {
+        final int request = tabDisplayRequest;
+        final long started = tabDisplayStarted;
+        final String label = game.pkg;
+        cardList.postOnAnimation(() -> {
+            if (request == tabDisplayRequest && pageResumed && !isDestroyed()) {
+                Log.i("HoyoUiTiming", "tab=" + label + " phase=" + phase + " cards=" + count
+                        + " frame_callback_ms=" + (SystemClock.uptimeMillis() - started));
+            }
+        });
+    }
+
+    private static void setPreviewEnabled(View view, boolean enabled) {
+        view.setEnabled(enabled);
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                setPreviewEnabled(group.getChildAt(index), enabled);
+            }
+        }
     }
 
     private void saveGame() {
@@ -1273,6 +1352,12 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void refreshAllStatus() {
+        store.invalidateDisplayChecks();
+        versionLabels.clear();
+        refresh();
+    }
+
     private void refresh() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             main.post(this::refresh);
@@ -1283,16 +1368,21 @@ public final class MainActivity extends Activity {
         }
         // Invalidate the old request immediately, even if a worker is still finishing.
         ++refreshGeneration;
-        startRefreshIfIdle();
+        // Coalesce quick tab changes before starting expensive status work.
+        main.removeCallbacks(refreshDispatch);
+        main.postDelayed(refreshDispatch, 60);
     }
 
+    private final Runnable refreshDispatch = this::startRefreshIfIdle;
+
     private void startRefreshIfIdle() {
-        if (refreshInFlight || busy) {
+        if (refreshInFlight || busy || !pageResumed || isFinishing() || isDestroyed()) {
             return;
         }
         refreshInFlight = true;
         final GameProfile selected = game;
         final int generation = refreshGeneration;
+        final String cachedVersion = versionLabels.get(selected);
         new Thread(() -> {
             try {
                 boolean rooted = RootShell.isRooted();
@@ -1300,10 +1390,14 @@ public final class MainActivity extends Activity {
                 String version;
                 try {
                     running = selected.isRunning();
-                    version = selected.version();
+                    version = cachedVersion != null ? cachedVersion : selected.version();
                 } catch (IOException error) {
                     running = null;
                     version = "";
+                }
+                if (generation != refreshGeneration) {
+                    main.post(() -> finishRefresh(selected, generation, null, false, null, ""));
+                    return;
                 }
                 SnapshotStore.RefreshData data = store.readRefreshData(selected, !busy);
                 final Boolean runningNow = running;
@@ -1350,6 +1444,11 @@ public final class MainActivity extends Activity {
             return;
         }
         displayedData = data;
+        ++previewGeneration; // A slow manifest preview must not replace confirmed data.
+        if (!version.isEmpty()) {
+            versionLabels.put(selected, version);
+        }
+        tabPreviews.put(selected, data);
         String rootText = rooted ? "Root 正常" : "未取得 Root：" + RootShell.lastError();
         String gameText = version.isEmpty() ? "未检测到" + selected.label
                 : selected.label + " " + version;
@@ -1366,6 +1465,7 @@ public final class MainActivity extends Activity {
         statusView.setTextColor(getColor(recoveryPending || !rooted ? R.color.danger : R.color.accent));
         renderDisplayedCards(selected);
         captureButton.setEnabled(selected.supported && cardActionsAvailable);
+        recordTabFrame("checked", data.snapshots.size());
         captureButton.setAlpha(captureButton.isEnabled() ? 1f : 0.45f);
         launchButton.setEnabled(!selected.activity.isEmpty() && cardActionsAvailable);
         launchButton.setAlpha(launchButton.isEnabled() ? 1f : 0.45f);
@@ -1575,10 +1675,18 @@ public final class MainActivity extends Activity {
 
     private void renderCards(List<SnapshotStore.Snapshot> snapshots, String currentId,
                              GameProfile selected, Map<String, Boolean> readableById) {
+        List<Object> signature = cardDisplaySignature(snapshots, currentId, selected, readableById,
+                renderingPreview, cardActionsAvailable, busy, sortMode);
+        Collections.addAll(signature, cardOpActive, focusedCardId);
+        if (signature.equals(renderedCardSignature)) {
+            return; // Status-only refresh: keep the existing views, focus and scroll position.
+        }
+        renderedCardSignature = signature;
         cancelCardDrag();
         ScrollView scroll = columnScroll != null ? columnScroll : pageScroll;
         int savedScrollY = scroll == null ? 0 : scroll.getScrollY();
         currentCardView = null;
+        cardList.setEnabled(true);
         cardList.removeAllViews();
         if (!selected.supported) {
             TextView unsupported = new TextView(this);
@@ -1592,7 +1700,8 @@ public final class MainActivity extends Activity {
         }
         if (snapshots.isEmpty()) {
             TextView empty = new TextView(this);
-            empty.setText("这个分栏还没有快照。登录 " + selected.label + " 后点「拍摄快照」，无需停止游戏。");
+            empty.setText(renderingPreview ? "正在确认卡片列表…"
+                    : "这个分栏还没有快照。登录 " + selected.label + " 后点「拍摄快照」，无需停止游戏。");
             empty.setTextSize(13);
             empty.setTextColor(getColor(R.color.text_muted));
             empty.setPadding(0, dp(20), 0, 0);
@@ -1670,15 +1779,16 @@ public final class MainActivity extends Activity {
 
             TextView meta = new TextView(this);
             meta.setText("更新于 " + format.format(new Date(snapshot.createdAt))
-                    + (readable ? "" : " · 快照无法读取")
-                    + (readable && !switchable && !isCurrent ? " · 切换待验证" : ""));
+                    + (renderingPreview ? " · 正在检查状态" : readable ? "" : " · 快照无法读取")
+                    + (!renderingPreview && readable && !switchable && !isCurrent ? " · 切换待验证" : ""));
             meta.setTextSize(12);
-            meta.setTextColor(getColor(readable ? R.color.text_muted : R.color.danger));
+            meta.setTextColor(getColor(renderingPreview || readable ? R.color.text_muted : R.color.danger));
             card.addView(meta, withTopMargin(withBottomMargin(matchWrap(), dp(10)), dp(4)));
 
             // A broken snapshot keeps its card; its main action becomes a manual update instead of
             // an unusable switch. Details stay reachable from the "⋯" menu.
-            Button primary = pill(!readable || isCurrent ? "更新快照" : SWITCH_ACCOUNT_LABEL, true);
+            Button primary = pill(renderingPreview ? "正在检查状态"
+                    : !readable || isCurrent ? "更新快照" : SWITCH_ACCOUNT_LABEL, true);
             if (!readable) {
                 primary.setOnClickListener(view -> confirmUpdateUnreadable(snapshot));
             } else if (isCurrent) {
@@ -1721,6 +1831,24 @@ public final class MainActivity extends Activity {
             return;
         }
         scroll.post(() -> scroll.scrollTo(0, y));
+    }
+
+    static List<Object> cardDisplaySignature(List<SnapshotStore.Snapshot> snapshots, String currentId,
+                                             GameProfile selected, Map<String, Boolean> readable,
+                                             boolean preview, boolean available, boolean working,
+                                             int ordering) {
+        List<Object> signature = new ArrayList<>();
+        Collections.addAll(signature, selected.pkg, currentId, preview, available, working, ordering);
+        for (SnapshotStore.Snapshot snapshot : snapshots) {
+            Collections.addAll(signature, snapshot.id, snapshot.name, snapshot.createdAt,
+                    snapshot.lastUsedAt, snapshot.loginName, snapshot.passwordEnc,
+                    readable.get(snapshot.id), snapshot.entries.size());
+            for (SnapshotStore.Entry entry : snapshot.entries.values()) {
+                Collections.addAll(signature, entry.path, entry.present, entry.size, entry.sha256,
+                        entry.uid, entry.gid, entry.mode, entry.context, entry.mtime);
+            }
+        }
+        return signature;
     }
 
     private static LinearLayout.LayoutParams withBottomMargin(LinearLayout.LayoutParams params,
@@ -2167,7 +2295,7 @@ public final class MainActivity extends Activity {
                 return;
             }
             dialog.dismiss();
-            runOp("保存账号密码", () -> {
+            runLocalCardOp("保存账号密码", snapshot, false, () -> {
                 store.setCredentials(snapshot, previousAccount, previousCiphertext,
                         accountText, passwordText);
                 appendLog("已保存账号密码：" + snapshot.name);
@@ -2295,7 +2423,7 @@ public final class MainActivity extends Activity {
         save.setOnClickListener(view -> {
             String name = input.getText().toString();
             dialog.dismiss();
-            runOp("重命名", snapshot, () -> store.rename(snapshot, name));
+            runLocalCardOp("重命名", snapshot, false, () -> store.rename(snapshot, name));
         });
         row.addView(cancel, weightWrap(1f, dp(4)));
         row.addView(save, weightWrap(1f, dp(4)));
@@ -2307,7 +2435,7 @@ public final class MainActivity extends Activity {
         showConfirm("删除快照",
                 "将删除「" + snapshot.name + "」及其历史版本。不会影响游戏内的账号。",
                 "删除", true,
-                () -> runOp("删除快照", snapshot, () -> store.delete(snapshot)),
+                () -> runLocalCardOp("删除快照", snapshot, true, () -> store.delete(snapshot)),
                 null);
     }
 
@@ -2522,24 +2650,66 @@ public final class MainActivity extends Activity {
     }
 
     private void runOp(String label, SnapshotStore.Snapshot card, Op operation) {
+        runOpInternal(label, card, false, false, operation);
+    }
+
+    private void runLocalCardOp(String label, SnapshotStore.Snapshot card, boolean removed, Op operation) {
+        runOpInternal(label, card, true, removed, operation);
+    }
+
+    private void runOpInternal(String label, SnapshotStore.Snapshot card, boolean localOnly,
+                               boolean removed, Op operation) {
         if (busy) {
             toast("上一个操作还没结束");
             return;
         }
         busy = true;
+        // An edit/delete/update may change card metadata; never preview its old copy afterward.
+        if (localOnly) {
+            tabPreviews.remove(card.game);
+        } else {
+            tabPreviews.clear();
+        }
+        ++previewGeneration;
         ++refreshGeneration;
+        final int operationGeneration = refreshGeneration;
         if (card != null) {
             focusCard(card);
         }
         appendLog("开始：" + label);
         // Keep the status pill untouched: rewriting it changes its height and shifts the list.
         new Thread(() -> {
+            boolean succeeded = false;
             try {
                 operation.run();
+                succeeded = true;
             } catch (Exception error) {
                 reportOperationError(error);
             } finally {
-                main.post(() -> finishOperation(false));
+                final boolean completed = succeeded;
+                main.post(() -> {
+                    if (localOnly && completed && usable(this) && current == this && pageResumed
+                            && displayedData != null && card.game == game
+                            && operationGeneration == refreshGeneration) {
+                        List<SnapshotStore.Snapshot> cards = new ArrayList<>();
+                        for (SnapshotStore.Snapshot existing : displayedData.snapshots) {
+                            if (!existing.id.equals(card.id)) {
+                                cards.add(existing);
+                            } else if (!removed) {
+                                cards.add(SnapshotStore.copyForAction(card));
+                            }
+                        }
+                        displayedData = new SnapshotStore.RefreshData(displayedData.current, cards,
+                                new HashMap<>(displayedData.midById),
+                                new HashMap<>(displayedData.readableById), displayedData.recoveryError);
+                        tabPreviews.put(game, displayedData);
+                        busy = false;
+                        unfocusCard();
+                        renderDisplayedCards(game);
+                    } else {
+                        finishOperation(false);
+                    }
+                });
             }
         }).start();
     }

@@ -6,6 +6,7 @@
 
 ## 发布与待发布状态
 
+- **v1.8.1：** [发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.8.1)（versionCode 67）。分栏只读预览、版本及界面可读性缓存、快速请求合并和过期结果拦截；卡片元数据局部更新，内容未变时复用视图。优化代码在手机 `54084396` 上完成 9 次分栏切换及快速切换验证：预览帧回调 10–21 ms，完整检查 509–964 ms。原神无卡片，另两款各 1 张卡；不是大量卡片测试，也不是显示面板延迟测试。详细边界见 App 发布记录，未重新测试游戏抓取、覆盖和恢复。
 - **v1.7.5：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.5)（versionCode 65）。失效快照可保留卡片就地更新（名称/备注/账号密码/顺序不变，确认后用当前登录状态覆盖）；固定排序下新卡追加到最底部；切换确认框在页面重建时正确复位 `busy`；聚焦期间真正锁定账号区滚动；PC 工具区分 `adb shell`（可见退出码）与 `exec-out`（二进制读取），写入改两阶段、恢复中断自动回滚。验证边界：49 项 starrail + 15 项 app Python 测试、Java 回归（SnapshotSafety/CredentialEdit/DialogWidth/LocalPasswordCrypto/UiSettings）与 debug/release 构建、证书指纹校验通过；真机验证安装升级、当前账号识别、快照写入全字节往返与 `snapshot.py diff`，未重做真机切换或失效卡更新验证。
 - **v1.7.4：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.4)（versionCode 64）。快照卡片支持长按手柄拖动，换位后切到固定顺序，并按游戏保存。模拟器验证上下拖动、边缘滚动、取消拖放、重启保序及跨游戏隔离。
 - **v1.7.3：** [正式发布页](https://github.com/STC214/HoyoSwitch/releases/tag/v1.7.3)（versionCode 63）。操作日志和悬浮按钮记住开关状态；悬浮按钮在权限仍有效时随 App 恢复，并保留原游戏绑定。设置写入成功后才应用；尚未做真机强杀重启或撤销权限测试。
